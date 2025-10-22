@@ -680,22 +680,25 @@ class Evaluator(
     // Trigger an object's own assertions. This defines a closure which is
     // invoked from within Val.Obj; it should not be called directly.
     def triggerAsserts(self: Val.Obj, sup: Val.Obj): Unit = {
-      val newScope: ValScope = makeNewScope(self, sup)
-      var i = 0
-      while (i < asserts.length) {
-        val a = asserts(i)
-        if (!visitExpr(a.value)(newScope).isInstanceOf[Val.True]) {
-          a.msg match {
-            case null => Error.fail("Assertion failed", a.value.pos, "Assert")
-            case msg  =>
-              Error.fail(
-                "Assertion failed: " + visitExpr(msg)(newScope).cast[Val.Str].value,
-                a.value.pos,
-                "Assert"
-              )
+      val assertCount = asserts.length
+      if (assertCount > 0) {
+        val newScope: ValScope = makeNewScope(self, sup)
+        var i = 0
+        while (i < assertCount) {
+          val a = asserts(i)
+          if (!visitExpr(a.value)(newScope).isInstanceOf[Val.True]) {
+            a.msg match {
+              case null => Error.fail("Assertion failed", a.value.pos, "Assert")
+              case msg  =>
+                Error.fail(
+                  "Assertion failed: " + visitExpr(msg)(newScope).cast[Val.Str].value,
+                  a.value.pos,
+                  "Assert"
+                )
+            }
           }
+          i += 1
         }
-        i += 1
       }
     }
 
