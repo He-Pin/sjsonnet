@@ -7,12 +7,15 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         lang: ['jvm', 'js', 'native']
         java: ['17', '21', '25']
     name: Sjsonnet build for ${{ matrix.lang }} on JDK ${{ matrix.java }}
+    env:
+      COURSIER_PROGRESS: true
     steps:
       - uses: actions/checkout@v6
       - name: Set up JDK ${{ matrix.java }}
@@ -24,12 +27,24 @@ jobs:
       - uses: sbt/setup-sbt@v1
       - name: Cache Coursier cache
         uses: coursier/cache-action@bebeeb0e6f48ebad66d3783946588ecf43114433 # 6.4.8
+      - name: Cache Mill out directory
+        uses: actions/cache@v4
+        with:
+          path: |
+            out/mill-worker-*
+          key: mill-${{ matrix.lang }}-${{ matrix.java }}-${{ hashFiles('build.mill') }}
+          restore-keys: |
+            mill-${{ matrix.lang }}-${{ matrix.java }}-
+      - name: Resolve dependencies
+        run: ./mill _.${{ matrix.lang }}[_].__.resolvedMvnDeps
+        timeout-minutes: 15
       - name: Check Formatting
         run: ./mill _.${{ matrix.lang }}[_].__.checkFormat
       - name: Compile with mill
         run: ./mill _.${{ matrix.lang }}[_].__.compile
       - name: Run mill tests for ${{ matrix.lang }}
         run: ./mill _.${{ matrix.lang }}[_].__.test
+        timeout-minutes: 30
       - name: Compile with sbt
         if: ${{ matrix.lang == 'jvm' }}
         run: sbt compile bench/compile bench/jmh:compile
