@@ -1,9 +1,23 @@
 # Benchmarks
 
-Run with `./mill bench.regressionBenchs`.
+Regression suites are executed with:
+
+```bash
+./mill bench.listRegressions
+./mill bench.runRegressions
+./mill bench.runRegressions bench/resources/go_suite/comparison2.jsonnet
+```
+
+Refresh benchmark golden outputs with:
+
+```bash
+./bench/resources/refresh_golden_outputs.sh
+```
+
+For benchmark protocol, workload classes, and branch-vs-base comparison rules, see `bench/BENCHMARK_LADDER.md`.
  
 ## bug_suite
-These contains various examples lifted from sjsonnet bug reports.
+These contain various examples lifted from sjsonnet bug reports.
 
 ## cpp_suite
 These are benchmarks copied from the C++ Jsonnet implementation's test suite.
