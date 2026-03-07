@@ -586,6 +586,11 @@ object Val {
       m.keySet().toArray(new Array[String](m.size()))
     }
 
+    lazy val sortedAllKeyNames: Array[String] = {
+      val keys = allKeyNames
+      if (keys.length < 2) keys else keys.sorted(Util.CodepointStringOrdering)
+    }
+
     lazy val visibleKeyNames: Array[String] = {
       if (static) {
         allKeyNames
@@ -601,6 +606,11 @@ object Val {
         }
         buf.result()
       }
+    }
+
+    lazy val sortedVisibleKeyNames: Array[String] = {
+      val keys = visibleKeyNames
+      if (keys.length < 2) keys else keys.sorted(Util.CodepointStringOrdering)
     }
 
     def value(k: String, pos: Position, self: Obj = this)(implicit evaluator: EvalScope): Val = {
@@ -691,7 +701,7 @@ object Val {
 
     def foreachElement(sort: Boolean, pos: Position)(f: (String, Val) => Unit)(implicit
         ev: EvalScope): Unit = {
-      val keys = if (sort) visibleKeyNames.sorted(Util.CodepointStringOrdering) else visibleKeyNames
+      val keys = if (sort) sortedVisibleKeyNames else visibleKeyNames
       for (k <- keys) {
         val v = value(k, pos)
         f(k, v)

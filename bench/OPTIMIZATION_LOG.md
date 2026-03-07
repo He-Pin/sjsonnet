@@ -163,3 +163,27 @@
   - the cache is intentionally small and bounded (`256` entries) to keep retention risk low while still catching repeated dynamic templates
   - parse failures are not cached; only successful parsed-format tuples are reused
   - static literal `%` formats still go through `Format.PartialApplyFmt`, so this wave specifically targets the remaining dynamic path in `Evaluator` / `std.format`
+
+## Wave 9: lazy sorted object-key cache reuse
+- Scope: lazily cache sorted object key arrays on `Val.Obj` and reuse them from materialization / object builtins / TOML manifest key walks instead of re-sorting the same visible-key snapshots.
+- Outcome: kept.
+- Validation:
+  - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+  - `./mill bench.runJmh -i 1 -wi 1 -f 1 'sjsonnet.bench.MainBenchmark.main'`
+  - `./mill bench.runRegressions bench/resources/go_suite/manifestJsonEx.jsonnet`
+  - `./mill bench.runRegressions bench/resources/go_suite/manifestYamlDoc.jsonnet`
+  - `./mill bench.runRegressions bench/resources/go_suite/manifestTomlEx.jsonnet`
+  - `./mill bench.runRegressions`
+- Measurements (baseline `9f08ee66` -> kept change):
+  - `MainBenchmark.main`: `3.237 ms/op -> 2.903 ms/op`
+  - `manifestJsonEx`: `0.075 ms/op -> 0.077 ms/op`
+  - `manifestYamlDoc`: `0.080 ms/op -> 0.078 ms/op`
+  - `manifestTomlEx`: `0.092 ms/op -> 0.090 ms/op`
+  - full `bench.runRegressions`: completed successfully in `437s`
+    - suite row `manifestJsonEx`: `0.077 ms/op`
+    - suite row `manifestYamlDoc`: `0.081 ms/op`
+    - suite row `manifestTomlEx`: `0.094 ms/op`
+    - suite row `comparison2`: `73.623 ms/op`
+- Notes:
+  - keep the cache lazy and per-object so semantics stay unchanged: the existing unsorted key snapshots remain the source of truth, while sorted arrays are only allocated on demand for sorted materialization paths.
+  - `std.manifestTomlEx` now partitions an already-sorted visible-key array, avoiding its prior double re-sort of section and non-section key groups.
