@@ -75,3 +75,34 @@
 - Notes:
   - this is a small but repeatable optimizer win, and it did not put the regression suite into a negative state.
   - the change is intentionally mechanical: preserve the same immutable `HashMap` / `Scope` model, but stop allocating intermediate tuple arrays for common scope-extension paths.
+
+## Wave 7: investigate `NewEvaluator` default regression
+- Scope: explain why the prior `Settings.useNewEvaluator = true` flip looked strong in `AST_VISIT_COUNTS.md` but regressed `bench/resources/go_suite/comparison2.jsonnet`, then try up to two focused fixes.
+- Outcome: investigation kept as notes only; no code change kept.
+- Reproduction:
+  - Baseline current HEAD (`useNewEvaluator = false` by default):
+    - `comparison2`: `72.683 ms/op`
+    - `MainBenchmark.main`: `3.152 ms/op`
+    - `assertions.jsonnet`: `0.301 ms/op`
+  - Reproduced prior default flip (`useNewEvaluator = true` only):
+    - `comparison2`: `75.151 ms/op`
+    - `MainBenchmark.main`: `3.282 ms/op`
+    - `assertions.jsonnet`: `0.305 ms/op`
+- Root cause notes:
+  - `bench/AST_VISIT_COUNTS.md`'s elapsed-time comparison is not a benchmark-quality A/B signal. `AstVisitCorpusRunner` always executes the old evaluator first and the new evaluator second for every file, with no warmup and separate parse caches, so the second evaluator systematically benefits from a warmer JVM / filesystem / class metadata state.
+  - `comparison2.jsonnet` is just `[i < j for i in std.range(1, 1000) for j in std.range(1, 1000)]`, so its hot loop is dominated by `ValidId` and `BinaryOp` dispatch inside the evaluator rather than array equality/concat work. That explains why earlier array-path micro-opts could not help this case.
+- Attempts:
+  1. Hybrid `NewEvaluator.visitExpr`: handle `ValidId`, `BinaryOp`, and `Val` with the old `instanceof` fast path before falling back to the tag switch.
+     - Result:
+       - targeted `comparison2`: improved on reruns (`75.151 -> 69.415 ms/op`, later `72.051 ms/op` vs `72.683 ms/op` baseline)
+       - `MainBenchmark.main`: still regressed (`3.152 -> 3.220 ms/op`)
+       - full `bench.runRegressions`: completed successfully in `437s`, but the suite row for `comparison2` still landed at `74.741 ms/op`
+     - Resolution: rejected. The hot-path fix helped the specific regression benchmark but was not a safe overall default-flip win.
+  2. Add `final` modifiers to `NewEvaluator` / dispatch overrides on top of attempt 1 to encourage JVM devirtualization.
+     - Result:
+       - `comparison2`: regressed back to `73.269 ms/op`
+     - Resolution: rejected immediately and reverted.
+- Resolution:
+  - leave `Settings.useNewEvaluator` defaulted to `false`
+  - keep the existing evaluator implementation from Wave 6 unchanged
+  - treat the corpus elapsed-time gap as diagnostic only, not as benchmark evidence for a default flip
