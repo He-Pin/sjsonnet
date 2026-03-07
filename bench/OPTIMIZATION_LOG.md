@@ -106,3 +106,36 @@
   - leave `Settings.useNewEvaluator` defaulted to `false`
   - keep the existing evaluator implementation from Wave 6 unchanged
   - treat the corpus elapsed-time gap as diagnostic only, not as benchmark evidence for a default flip
+
+## Wave 8: reuse the mutable `Scope` shell during consecutive binding rewrites
+- Scope: cut `StaticOptimizer` scope-management allocation churn further by reusing a single `Scope` object inside `nestedConsecutiveBindings` while still keeping immutable `HashMap` updates for the actual bindings.
+- Outcome: kept.
+- Hypotheses explored:
+  1. Remove the unused `ScopedVal.sc` back-reference to shrink each scoped binding record.
+     - Result: rejected.
+     - Measurements:
+       - `OptimizerBenchmark.main`: `0.551 ms/op -> 0.556 ms/op`
+       - `MainBenchmark.main`: `2.938 ms/op -> 2.884 ms/op`
+     - Reason: mixed signal; the optimizer-focused benchmark regressed, so the change was reverted.
+  2. Reuse one `Scope` instance across the `nestedConsecutiveBindings` transform loop and mutate only its `mappings` field as rewritten bindings become available.
+     - Result: kept.
+- Validation:
+  - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+  - `./mill bench.runJmh -i 1 -wi 1 -f 1 'sjsonnet.bench.OptimizerBenchmark.main'`
+  - `./mill bench.runJmh -i 1 -wi 1 -f 1 'sjsonnet.bench.MainBenchmark.main'`
+  - `./mill bench.runRegressions bench/resources/go_suite/comparison2.jsonnet`
+  - `./mill bench.runRegressions`
+- Measurements:
+  - Baseline `2ebebc0f`:
+    - `OptimizerBenchmark.main`: `0.551 ms/op`
+    - `MainBenchmark.main`: `2.938 ms/op`
+    - `comparison2`: `75.632 ms/op`
+  - Kept change:
+    - `OptimizerBenchmark.main`: `0.542 ms/op`
+    - `MainBenchmark.main`: `2.793 ms/op`
+    - targeted `comparison2`: `72.272 ms/op`
+    - full `bench.runRegressions` suite row for `comparison2`: `74.844 ms/op`
+    - full `bench.runRegressions`: completed successfully in `436s`
+- Notes:
+  - the win comes from avoiding one transient `Scope` allocation per transformed binding in `nestedConsecutiveBindings`; the immutable `HashMap` structure and binding semantics stay unchanged.
+  - keeping `Scope` itself mutable is intentionally narrow: only the active shell object for the current consecutive-binding block is reused, and nested scopes still get their own `Scope` instances.

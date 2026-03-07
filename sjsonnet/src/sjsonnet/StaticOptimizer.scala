@@ -697,7 +697,8 @@ class StaticOptimizer(
           mergedMappings = mergedMappings.updated(b.name, sv)
           idx += 1
         }
-        scope = new Scope(mergedMappings, baseSize + a.length)
+        val bindingScope = new Scope(mergedMappings, baseSize + a.length)
+        scope = bindingScope
         var a2: Array[Bind] = null
         idx = 0
         while (idx < a.length) {
@@ -709,7 +710,7 @@ class StaticOptimizer(
           val sv =
             if (b2 eq b) sv0
             else sv0.copy(v = if (b2.args == null) b2.rhs else b2)
-          scope = new Scope(scope.mappings.updated(b.name, sv), scope.size)
+          bindingScope.mappings = bindingScope.mappings.updated(b.name, sv)
           idx += 1
         }
         (if (a2 eq null) a else a2, g)
@@ -1209,7 +1210,7 @@ class StaticOptimizer(
 object StaticOptimizer {
   final case class ScopedVal(v: AnyRef, sc: Scope, idx: Int)
 
-  final class Scope(val mappings: HashMap[String, ScopedVal], val size: Int) {
+  final class Scope(var mappings: HashMap[String, ScopedVal], val size: Int) {
     def get(s: String): ScopedVal = mappings.getOrElse(s, null)
     def contains(s: String): Boolean = mappings.contains(s)
   }
