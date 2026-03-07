@@ -139,3 +139,27 @@
 - Notes:
   - the win comes from avoiding one transient `Scope` allocation per transformed binding in `nestedConsecutiveBindings`; the immutable `HashMap` structure and binding semantics stay unchanged.
   - keeping `Scope` itself mutable is intentionally narrow: only the active shell object for the current consecutive-binding block is reused, and nested scopes still get their own `Scope` instances.
+
+## Wave 9: cache parsed dynamic `%` formats
+- Scope: avoid reparsing non-literal `%` format strings on every call by adding a small bounded parsed-format cache in `Format.format`, while keeping literal-format specialization in `StaticOptimizer` unchanged.
+- Outcome: kept.
+- Hypothesis:
+  - repeated dynamic format strings pay `fastparse.parse` every time today
+  - a small LRU cache keyed by the full format string should remove that repeated parse cost for template-heavy workloads without changing formatting semantics
+- Validation:
+  - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+  - `./mill bench.runJmh -i 1 -wi 1 -f 1 'sjsonnet.bench.MainBenchmark.main'`
+  - `./mill bench.runRegressions /tmp/dynamic_format_cache.jsonnet`
+  - `./mill bench.runRegressions`
+- Measurements (baseline `9f08ee66` -> kept change):
+  - focused dynamic-format regression `/tmp/dynamic_format_cache.jsonnet`: `8.946 ms/op -> 4.839 ms/op`
+  - `MainBenchmark.main`: `3.141 ms/op -> 3.085 ms/op`
+  - full `bench.runRegressions`: completed successfully in `437s`
+  - selected suite rows after the change:
+    - `assertions`: `0.271 ms/op`
+    - `large_string_template`: `2.391 ms/op`
+    - `comparison2`: `73.623 ms/op`
+- Notes:
+  - the cache is intentionally small and bounded (`256` entries) to keep retention risk low while still catching repeated dynamic templates
+  - parse failures are not cached; only successful parsed-format tuples are reused
+  - static literal `%` formats still go through `Format.PartialApplyFmt`, so this wave specifically targets the remaining dynamic path in `Evaluator` / `std.format`
