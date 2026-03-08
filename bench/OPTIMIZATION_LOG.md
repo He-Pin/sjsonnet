@@ -516,3 +516,40 @@
   - Full keep-gate `./mill bench.runRegressions` was intentionally skipped because neither attempt was positive.
   - Post-revert verification: `git --no-pager diff --name-only -- sjsonnet/src/sjsonnet/Format.scala` was empty; only this log update and `bench/reports/format-followup-wave.md` remained.
   - Detailed evidence is captured in `bench/reports/format-followup-wave.md`.
+
+## Wave 20: object-read-cache-wave
+- Scope: evaluate a narrow object repeated-read cache / merged visible-read fast path, allowing one contained fallback in the same lane.
+- Outcome: reverted; no source code change kept.
+- Correctness checks (each attempt):
+  - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+- Baseline measurements:
+  - `manifestJsonEx`: `0.122 ms/op`
+  - `manifestYamlDoc`: `0.121 ms/op`
+  - `manifestTomlEx`: `0.164 ms/op`
+  - `realistic1`: `2.840 ms/op`
+  - `realistic2`: `72.551 ms/op`
+  - `MainBenchmark.main`: `3.920 ms/op`
+- Attempts:
+  1. `Val.Obj` visible-read value-array cache + Materializer object-loop hookup.
+     - Measurements:
+       - `manifestJsonEx`: `0.081 ms/op`
+       - `manifestYamlDoc`: `0.083 ms/op`
+       - `manifestTomlEx`: `0.097 ms/op`
+       - `realistic1`: `2.988 ms/op`
+       - `realistic2`: `82.266 ms/op`
+       - `MainBenchmark.main`: `5.028 ms/op`
+     - Resolution: rejected and reverted (broad regressions).
+  2. Fallback contained repeated-read reuse in `ManifestModule.renderTableInternal` for `manifestTomlEx`.
+     - Measurements:
+       - `manifestJsonEx`: `0.099 ms/op`
+       - `manifestYamlDoc`: `0.105 ms/op`
+       - `manifestTomlEx`: `0.113 ms/op`
+       - `realistic1`: `2.841 ms/op`
+       - `realistic2`: `89.704 ms/op`
+       - `MainBenchmark.main`: `7.201 ms/op`
+     - Resolution: rejected and reverted (strong broad regressions).
+- Notes:
+  - Attempt 1 was reverted before attempt 2, per policy.
+  - Full keep-gate `./mill bench.runRegressions` was intentionally skipped because neither attempt was positive.
+  - Post-revert verification: `git --no-pager diff --name-only -- sjsonnet/src/sjsonnet/Val.scala sjsonnet/src/sjsonnet/Materializer.scala sjsonnet/src/sjsonnet/stdlib/ManifestModule.scala` was empty; only this log update and `bench/reports/object-read-cache-wave.md` remained.
+  - Detailed evidence is captured in `bench/reports/object-read-cache-wave.md`.
