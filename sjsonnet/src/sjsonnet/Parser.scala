@@ -74,10 +74,7 @@ object Parser {
 class Parser(
     val currentFile: Path,
     internedStrings: mutable.HashMap[String, String],
-    internedStaticFieldSets: mutable.HashMap[
-      Val.StaticObjectFieldSet,
-      java.util.LinkedHashMap[String, java.lang.Boolean]
-    ],
+    internedStaticFieldSets: Val.StaticObjectLayoutCache,
     settings: Settings = Settings.default) {
 
   import Parser._

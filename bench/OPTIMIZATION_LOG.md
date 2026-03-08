@@ -553,3 +553,30 @@
   - Full keep-gate `./mill bench.runRegressions` was intentionally skipped because neither attempt was positive.
   - Post-revert verification: `git --no-pager diff --name-only -- sjsonnet/src/sjsonnet/Val.scala sjsonnet/src/sjsonnet/Materializer.scala sjsonnet/src/sjsonnet/stdlib/ManifestModule.scala` was empty; only this log update and `bench/reports/object-read-cache-wave.md` remained.
   - Detailed evidence is captured in `bench/reports/object-read-cache-wave.md`.
+
+## Wave 21: static-object-wave
+- Scope: static-object-only representation specialization in `Val.staticObject` and static lookup paths, with interned shared layout metadata (field order + key-index) and per-object values arrays.
+- Outcome: kept.
+- Validation:
+  - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+  - `./mill bench.runJmh -i 1 -wi 1 -f 1 'sjsonnet.bench.MainBenchmark.main'`
+  - `./mill bench.runJmh -i 1 -wi 1 -f 1 'sjsonnet.bench.OptimizerBenchmark.main'`
+  - `./mill bench.runRegressions bench/resources/go_suite/manifestJsonEx.jsonnet`
+  - `./mill bench.runRegressions bench/resources/go_suite/manifestYamlDoc.jsonnet`
+  - `./mill bench.runRegressions bench/resources/go_suite/manifestTomlEx.jsonnet`
+  - `./mill bench.runRegressions bench/resources/cpp_suite/realistic1.jsonnet`
+  - `./mill bench.runRegressions bench/resources/cpp_suite/realistic2.jsonnet`
+  - `./mill bench.runRegressions`
+- Measurements:
+  - `MainBenchmark.main`: `3.718 -> 3.389 ms/op`
+  - `OptimizerBenchmark.main`: `0.577 -> 0.569 ms/op`
+  - Focused regressions after change (smoke timings only; paired baseline rows were not captured in the initial run output):
+    - `manifestJsonEx`: `0.089 ms/op`
+    - `manifestYamlDoc`: `0.087 ms/op`
+    - `manifestTomlEx`: `0.107 ms/op`
+    - `realistic1`: `2.877 ms/op`
+    - `realistic2`: `74.410 ms/op`
+  - Full keep-gate `bench.runRegressions`: `SUCCESS` (`125/125`) in `442s`.
+- Notes:
+  - did not retry rejected broad visible-read caching / materializer consumer-hook approaches from `object-read-cache-wave`.
+  - detailed evidence is captured in `bench/reports/static-object-wave.md`.

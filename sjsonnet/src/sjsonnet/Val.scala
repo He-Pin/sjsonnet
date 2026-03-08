@@ -362,7 +362,9 @@ object Val {
       `super`: Obj,
       valueCache: util.HashMap[Any, Val] = new util.HashMap[Any, Val](),
       private var allKeys: util.LinkedHashMap[String, java.lang.Boolean] = null,
-      private val excludedKeys: java.util.Set[String] = null)
+      private val excludedKeys: java.util.Set[String] = null,
+      private val staticLayout: StaticObjectLayout = null,
+      private val staticValues: Array[Val] = null)
       extends Literal
       with Expr.ObjBody {
     private var asserting: Boolean = false
@@ -376,7 +378,7 @@ object Val {
       if (value0 == null) {
         val value0 = Util.preSizedJavaLinkedHashMap[String, Val.Obj.Member](allKeys.size())
         allKeys.forEach { (k, _) =>
-          value0.put(k, new Val.Obj.ConstMember(false, Visibility.Normal, valueCache.get(k)))
+          value0.put(k, new Val.Obj.ConstMember(false, Visibility.Normal, staticLookup(k)))
         }
         // Only assign to field after initialization is complete to allow unsynchronized multi-threaded use:
         this.value0 = value0
@@ -568,8 +570,11 @@ object Val {
     }
 
     @inline def containsKey(k: String): Boolean = {
-      val m = if (static || `super` != null) getAllKeys else value0
-      m.containsKey(k)
+      if (staticLayout != null && `super` == null) staticLayout.indices.containsKey(k)
+      else {
+        val m = if (static || `super` != null) getAllKeys else value0
+        m.containsKey(k)
+      }
     }
 
     @inline def containsVisibleKey(k: String): Boolean = {
@@ -582,8 +587,11 @@ object Val {
     }
 
     lazy val allKeyNames: Array[String] = {
-      val m = if (static || `super` != null) getAllKeys else value0
-      m.keySet().toArray(new Array[String](m.size()))
+      if (staticLayout != null && `super` == null) staticLayout.keys.clone()
+      else {
+        val m = if (static || `super` != null) getAllKeys else value0
+        m.keySet().toArray(new Array[String](m.size()))
+      }
     }
 
     lazy val sortedAllKeyNames: Array[String] = {
@@ -615,7 +623,7 @@ object Val {
 
     def value(k: String, pos: Position, self: Obj = this)(implicit evaluator: EvalScope): Val = {
       if (static) {
-        valueCache.get(k) match {
+        staticLookup(k) match {
           case null => Error.fail("Field does not exist: " + k, pos)
           case x    => x
         }
@@ -674,7 +682,7 @@ object Val {
         addTo: util.HashMap[Any, Val] = null,
         addKey: Any = null)(implicit evaluator: EvalScope): Val = {
       if (static) {
-        val v = valueCache.get(k)
+        val v = staticLookup(k)
         if (addTo != null && v != null) addTo.put(addKey, v)
         v
       } else {
@@ -697,6 +705,13 @@ object Val {
             v
         }
       }
+    }
+
+    @inline private def staticLookup(k: String): Val = {
+      if (staticLayout != null) {
+        val idx = staticLayout.indices.get(k)
+        if (idx == null) null else staticValues(idx.intValue())
+      } else valueCache.get(k)
     }
 
     def foreachElement(sort: Boolean, pos: Position)(f: (String, Val) => Unit)(implicit
@@ -724,23 +739,23 @@ object Val {
     }
   }
 
+  final class StaticObjectLayout(
+      val keys: Array[String],
+      val allKeys: java.util.LinkedHashMap[String, java.lang.Boolean],
+      val indices: java.util.HashMap[String, java.lang.Integer])
+
   def staticObject(
       pos: Position,
       fields: Array[Expr.Member.Field],
-      internedKeyMaps: mutable.HashMap[
-        StaticObjectFieldSet,
-        java.util.LinkedHashMap[String, java.lang.Boolean]
-      ],
+      internedLayouts: StaticObjectLayoutCache,
       internedStrings: mutable.HashMap[String, String]): Obj = {
-    val cache = Util.preSizedJavaHashMap[Any, Val](fields.length)
-    val allKeys = Util.preSizedJavaLinkedHashMap[String, java.lang.Boolean](fields.length)
+    val values = new Array[Val](fields.length)
     val keys = new Array[String](fields.length)
     var idx = 0
     fields.foreach {
       case Expr.Member.Field(_, Expr.FieldName.Fixed(k), _, _, _, rhs: Val.Literal) =>
         val uniqueKey = internedStrings.getOrElseUpdate(k, k)
-        cache.put(uniqueKey, rhs)
-        allKeys.put(uniqueKey, false)
+        values(idx) = rhs
         keys(idx) = uniqueKey
         idx += 1
       case other =>
@@ -749,16 +764,35 @@ object Val {
         )
     }
     val fieldSet = new StaticObjectFieldSet(keys)
+    val layout = internedLayouts.getOrElseUpdate(
+      fieldSet, {
+        val allKeys = Util.preSizedJavaLinkedHashMap[String, java.lang.Boolean](keys.length)
+        val indices = Util.preSizedJavaHashMap[String, java.lang.Integer](keys.length)
+        var i = 0
+        while (i < keys.length) {
+          val key = keys(i)
+          allKeys.put(key, false)
+          indices.put(key, i)
+          i += 1
+        }
+        new StaticObjectLayout(keys, allKeys, indices)
+      }
+    )
     new Val.Obj(
       pos,
       null,
       true,
       null,
       null,
-      cache,
-      internedKeyMaps.getOrElseUpdate(fieldSet, allKeys)
+      null,
+      layout.allKeys,
+      null,
+      layout,
+      values
     )
   }
+
+  type StaticObjectLayoutCache = mutable.HashMap[StaticObjectFieldSet, StaticObjectLayout]
 
   abstract class Func(var pos: Position, val defSiteValScope: ValScope, val params: Params)
       extends Val

@@ -77,10 +77,7 @@ class Interpreter(
 
   protected val internedStrings = new mutable.HashMap[String, String]
 
-  protected val internedStaticFieldSets = new mutable.HashMap[
-    Val.StaticObjectFieldSet,
-    java.util.LinkedHashMap[String, java.lang.Boolean]
-  ]
+  protected val internedStaticFieldSets = new Val.StaticObjectLayoutCache
 
   val resolver: CachedResolver = createResolver(
     if (debugStats != null) new CountingParseCache(parseCache, debugStats) else parseCache
@@ -118,10 +115,7 @@ class Interpreter(
       ev: EvalScope,
       std: Val.Obj,
       internedStrings: mutable.HashMap[String, String],
-      internedStaticFieldSets: mutable.HashMap[
-        Val.StaticObjectFieldSet,
-        java.util.LinkedHashMap[String, java.lang.Boolean]
-      ]): StaticOptimizer = {
+      internedStaticFieldSets: Val.StaticObjectLayoutCache): StaticOptimizer = {
     new StaticOptimizer(ev, variableResolver, std, internedStrings, internedStaticFieldSets)
   }
 

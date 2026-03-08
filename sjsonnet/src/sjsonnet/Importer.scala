@@ -198,10 +198,7 @@ class CachedResolver(
     parentImporter: Importer,
     val parseCache: ParseCache,
     internedStrings: mutable.HashMap[String, String],
-    internedStaticFieldSets: mutable.HashMap[
-      Val.StaticObjectFieldSet,
-      java.util.LinkedHashMap[String, java.lang.Boolean]
-    ],
+    internedStaticFieldSets: Val.StaticObjectLayoutCache,
     settings: Settings = Settings.default)
     extends CachedImporter(parentImporter) {
 

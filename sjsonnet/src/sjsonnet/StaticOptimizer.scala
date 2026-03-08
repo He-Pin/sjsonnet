@@ -26,10 +26,7 @@ class StaticOptimizer(
     variableResolver: String => Option[Expr],
     std: Val.Obj,
     internedStrings: mutable.HashMap[String, String],
-    internedStaticFieldSets: mutable.HashMap[
-      Val.StaticObjectFieldSet,
-      java.util.LinkedHashMap[String, java.lang.Boolean]
-    ]) {
+    internedStaticFieldSets: Val.StaticObjectLayoutCache) {
   import StaticOptimizer.*
 
   private[this] var scope: Scope = emptyScope
