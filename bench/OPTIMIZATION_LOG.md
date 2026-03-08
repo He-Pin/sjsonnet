@@ -384,3 +384,38 @@
   - attempt 1 changed externally checked parser failure behavior, so it was discarded immediately.
   - attempt 2 preserved correctness but was strongly benchmark-negative on broad and focused gates, so full keep-gate `./mill bench.runRegressions` was intentionally skipped.
   - detailed evidence is captured in `bench/reports/parser-object-pass-wave.md`.
+
+## Wave 16: materializer-render-wave
+- Scope: evaluate a contained materialization/rendering wave with two attempts:
+  1) `Materializer.scala` hot-loop cleanup (remove redundant sorted-adjacent checks; trialed sub-visitor hoist),
+  2) fallback local cleanup in `ManifestModule.renderTableInternal` for `manifestTomlEx`.
+- Outcome: reverted; no source code change kept.
+- Correctness checks:
+  - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+- Baseline measurements:
+  - `manifestJsonEx`: `0.089 ms/op`
+  - `manifestYamlDoc`: `0.085 ms/op`
+  - `manifestTomlEx`: `0.094 ms/op`
+  - `realistic1`: `2.829 ms/op`
+  - `MainBenchmark.main`: `3.801 ms/op`
+  - `MaterializerBenchmark.*`: setup failure (`NoSuchElementException: None.get` in `MaterializerBenchmark.setup`) in this environment.
+- Attempts:
+  1. Materializer sorted-loop assertion removal (sub-visitor hoist variant first rolled back due FileTests failures).
+     - Measurements:
+       - `manifestJsonEx`: `0.226 ms/op`
+       - `manifestYamlDoc`: `0.303 ms/op`
+       - `manifestTomlEx`: `0.182 ms/op`
+       - `realistic1`: `2.897 ms/op`
+       - `MainBenchmark.main`: `3.298 ms/op`
+     - Resolution: rejected and reverted.
+  2. `manifestTomlEx` single-pass section classification / lookup-reduction cleanup.
+     - Measurements:
+       - `manifestJsonEx`: `0.082 ms/op`
+       - `manifestYamlDoc`: `0.081 ms/op`
+       - `manifestTomlEx`: `0.118 ms/op`
+       - `realistic1`: `3.760 ms/op`
+       - `MainBenchmark.main`: `4.516 ms/op`
+     - Resolution: rejected and reverted.
+- Notes:
+  - Neither attempt passed the focused gate; full keep-gate `./mill bench.runRegressions` was intentionally skipped.
+  - Detailed evidence is captured in `bench/reports/materializer-render-wave.md`.
