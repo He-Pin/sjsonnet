@@ -187,3 +187,200 @@
 - Notes:
   - keep the cache lazy and per-object so semantics stay unchanged: the existing unsorted key snapshots remain the source of truth, while sorted arrays are only allocated on demand for sorted materialization paths.
   - `std.manifestTomlEx` now partitions an already-sorted visible-key array, avoiding its prior double re-sort of section and non-section key groups.
+
+## Wave 10: ASCII/common-case string fast-path investigation
+- Scope: try one contained JVM string-path wave focused on common no-surrogate cases, with at most one alternative before deciding whether to keep it.
+- Outcome: reverted; no code change kept.
+- Baseline revision: `fdf932fe`
+- Correctness checks:
+  - `./mill __.checkFormat`
+  - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+- Attempts:
+  1. Fast-path `std.length`, `std.substr`, and `Util.sliceStr` for strings with no UTF-16 surrogates.
+     - Validation:
+       - `./mill bench.runRegressions bench/resources/go_suite/substr.jsonnet`
+       - `./mill bench.runRegressions bench/resources/cpp_suite/large_string_template.jsonnet`
+       - `./mill bench.runJmh -i 1 -wi 1 -f 1 'sjsonnet.bench.MainBenchmark.main'`
+     - Measurements:
+       - `substr`: `0.161 ms/op -> 0.163 ms/op`
+       - `large_string_template`: `2.158 ms/op -> 2.205 ms/op`
+       - `MainBenchmark.main`: `3.118 ms/op -> 3.135 ms/op`
+     - Resolution: rejected and reverted before trying the fallback idea.
+  2. Fast-path `stripChars` / `lstripChars` / `rstripChars` / `trim` for no-surrogate character sets using direct `charAt` / `indexOf` margin scans.
+     - Validation:
+       - `./mill bench.runRegressions bench/resources/go_suite/stripChars.jsonnet`
+       - `./mill bench.runRegressions bench/resources/go_suite/lstripChars.jsonnet`
+       - `./mill bench.runRegressions bench/resources/go_suite/rstripChars.jsonnet`
+       - `./mill bench.runJmh -i 1 -wi 1 -f 1 'sjsonnet.bench.MainBenchmark.main'`
+     - Measurements:
+       - `stripChars`: `0.598 ms/op -> 0.603 ms/op`
+       - `lstripChars`: `0.617 ms/op -> 0.624 ms/op`
+       - `rstripChars`: `0.617 ms/op -> 0.611 ms/op`
+       - `MainBenchmark.main`: `3.118 ms/op -> 3.140 ms/op`
+     - Resolution: rejected and reverted.
+- Notes:
+  - both contained string-path ideas produced targeted regressions or a worse `MainBenchmark.main`, so this wave was stopped before the full `./mill bench.runRegressions` keep-gate.
+  - revisit this lane with a more evidence-driven workload or a lower-overhead specialization; the naive extra branch/scan work did not pay for itself on the current suite.
+
+## Wave 11: parser fast-path investigation
+- Scope: try one contained parser allocation/fast-path wave with at most one alternative before deciding whether to keep it.
+- Outcome: reverted; no code change kept.
+- Correctness checks:
+  - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+- Baseline measurements:
+  - `ParserBenchmark.main`: `1.434 ms/op`
+  - `MainBenchmark.main`: `3.097 ms/op`
+  - `large_string_join`: `2.214 ms/op`
+  - `large_string_template`: `2.192 ms/op`
+  - `member`: `0.720 ms/op`
+- Attempts:
+  1. Numeric no-underscore fast path in `Parser.number`.
+     - Validation:
+       - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+       - `./mill bench.runJmh -i 1 -wi 1 -f 1 'sjsonnet.bench.ParserBenchmark.main'`
+       - `./mill bench.runJmh -i 1 -wi 1 -f 1 'sjsonnet.bench.MainBenchmark.main'`
+       - `./mill bench.runRegressions bench/resources/go_suite/member.jsonnet`
+     - Measurements:
+       - `ParserBenchmark.main`: `1.434 -> 1.533 ms/op`
+       - `MainBenchmark.main`: `3.097 -> 3.268 ms/op`
+       - `member`: `0.720 -> 0.796 ms/op`
+     - Resolution: rejected and reverted.
+  2. Quoted string fast path for plain literals.
+     - Validation:
+       - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+     - Result:
+       - rejected before benchmarking after 8 golden mismatches changed externally checked parse-error text
+     - Resolution: rejected and reverted.
+- Notes:
+  - no candidate survived correctness and focused benchmark gates, so the full `./mill bench.runRegressions` keep-gate was intentionally skipped.
+  - detailed evidence is captured in `bench/reports/parser-fast-path-wave.md`.
+
+## Wave 12: cache-key and parse-cache investigation
+- Scope: try one contained cache-related JVM wave around default parse-cache concurrency and cache-key fingerprinting.
+- Outcome: reverted; no code change kept.
+- Correctness checks:
+  - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+- Baseline measurements:
+  - `MultiThreadedBenchmark.main`: `5.451 ms/op`
+  - `MainBenchmark.main`: `3.191 ms/op`
+- Attempts:
+  1. Make `DefaultParseCache` concurrent and use it directly in `MultiThreadedBenchmark`.
+     - Validation:
+       - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+       - `./mill bench.runJmh -i 1 -wi 1 -f 1 'sjsonnet.bench.MultiThreadedBenchmark.main'`
+     - Result:
+       - rejected for functional failures under concurrent cold loads (`LazyApply1` `ClassCastException`, then `Val$Builtin1` `NullPointerException`)
+     - Resolution: reverted; current runtime is not safe for this contained miss-sharing change.
+  2. Replace `StaticResolvedFile.contentHash()` full-string keys with a cached short fingerprint.
+     - Validation:
+       - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+       - `./mill bench.runJmh -i 1 -wi 1 -f 1 'sjsonnet.bench.MultiThreadedBenchmark.main'`
+       - `./mill bench.runJmh -i 1 -wi 1 -f 1 'sjsonnet.bench.MainBenchmark.main'`
+     - Measurements:
+       - `MultiThreadedBenchmark.main`: `5.451 -> 5.606 ms/op`
+       - `MainBenchmark.main`: `3.191 -> 3.385 ms/op`
+     - Resolution: rejected and reverted.
+- Notes:
+  - default concurrent parse-cache miss sharing appears unsafe with today's cold-load parse/evaluator result publication model.
+  - detailed evidence is captured in `bench/reports/cache-key-wave.md`.
+
+## Wave 13: optimizer scratch-state investigation
+- Scope: revisit `StaticOptimizer.nestedConsecutiveBindings` with a narrow allocation-churn wave, allowing up to two contained variants before deciding whether to keep anything.
+- Outcome: reverted; no code change kept.
+- Correctness checks:
+  - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+- Baseline measurements:
+  - `OptimizerBenchmark.main`: `0.533 ms/op`
+  - `MainBenchmark.main`: `3.132 ms/op`
+  - `bench/resources/go_suite/comparison2.jsonnet`: `71.522 ms/op`
+- Attempts:
+  1. Build the initial merged binding map with a builder and also skip redundant second-pass scope-map updates when a binding rewrite returned the original bind.
+     - Validation:
+       - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+       - `./mill bench.runJmh -i 1 -wi 1 -f 1 'sjsonnet.bench.OptimizerBenchmark.main'`
+       - `./mill bench.runJmh -i 1 -wi 1 -f 1 'sjsonnet.bench.MainBenchmark.main'`
+       - `./mill bench.runRegressions bench/resources/go_suite/comparison2.jsonnet`
+     - Measurements:
+       - `OptimizerBenchmark.main`: `0.533 -> 0.541 ms/op`
+       - `MainBenchmark.main`: `3.132 -> 3.487 ms/op`
+       - `comparison2`: `71.522 -> 74.171 ms/op`
+     - Resolution: rejected and reverted.
+  2. Keep the original first-pass map build, but skip redundant second-pass scope-map updates when `transformBind` returned the original bind.
+     - Validation:
+       - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+       - `./mill bench.runJmh -i 1 -wi 1 -f 1 'sjsonnet.bench.OptimizerBenchmark.main'`
+       - `./mill bench.runJmh -i 1 -wi 1 -f 1 'sjsonnet.bench.MainBenchmark.main'`
+       - `./mill bench.runRegressions bench/resources/go_suite/comparison2.jsonnet`
+     - Measurements:
+       - `OptimizerBenchmark.main`: `0.533 -> 0.546 ms/op`
+       - `MainBenchmark.main`: `3.132 -> 3.155 ms/op`
+       - `comparison2`: `71.522 -> 72.370 ms/op`
+     - Resolution: rejected and reverted.
+- Notes:
+  - both variants moved the focused optimizer and end-to-end signals in the wrong direction, so the full keep-gate `./mill bench.runRegressions` was intentionally skipped.
+  - detailed evidence is captured in `bench/reports/optimizer-scratch-wave.md`.
+
+## Wave 14: stdlib loop combinator investigation
+- Scope: evaluate the stdlib loop lane (`member`/`foldl` family) with up to two contained allocation-reduction attempts in `ArrayModule`.
+- Outcome: reverted; no code change kept.
+- Correctness checks:
+  - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+- Baseline measurements:
+  - `member`: `0.749 ms/op`
+  - `reverse`: `11.297 ms/op`
+  - `foldl`: `10.090 ms/op`
+  - `setDiff`: `0.514 ms/op`
+  - `setInter`: `0.450 ms/op`
+  - `setUnion`: `0.790 ms/op`
+  - `MainBenchmark.main`: `3.302 ms/op`
+- Attempts:
+  1. `std.member` array membership `indexWhere` -> indexed while loop.
+     - Measurements:
+       - `member`: `0.806 ms/op`
+       - `reverse`: `11.632 ms/op`
+       - `foldl`: `10.456 ms/op`
+       - `setDiff`: `0.520 ms/op`
+       - `setInter`: `0.448 ms/op`
+       - `setUnion`: `0.806 ms/op`
+       - `MainBenchmark.main`: `3.550 ms/op`
+     - Resolution: rejected and reverted.
+  2. `std.foldl` array branch Scala iterator loop -> indexed while loop.
+     - Measurements:
+       - `member`: `0.726 ms/op`
+       - `reverse`: `11.133 ms/op`
+       - `foldl`: `10.446 ms/op`
+       - `setDiff`: `0.492 ms/op`
+       - `setInter`: `0.443 ms/op`
+       - `setUnion`: `0.785 ms/op`
+       - `MainBenchmark.main`: `3.435 ms/op`
+     - Resolution: rejected and reverted.
+- Notes:
+  - both contained attempts failed the focused broad-gate signal (`MainBenchmark.main`), so the full keep-gate `./mill bench.runRegressions` was intentionally skipped.
+  - detailed evidence is captured in `bench/reports/stdlib-loop-wave.md`.
+
+## Wave 15: parser object-member single-pass investigation
+- Scope: evaluate `Parser.objinside` member-list parsing for allocation reduction by collapsing multi-pass member collection / duplicate checks into contained single-pass variants.
+- Outcome: reverted; no code change kept.
+- Correctness checks:
+  - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+- Baseline measurements:
+  - `ParserBenchmark.main`: `1.541 ms/op`
+  - `MainBenchmark.main`: `3.434 ms/op`
+  - `gen_big_object`: `1.150 ms/op`
+  - `realistic1`: `3.184 ms/op`
+- Attempts:
+  1. Full member-list single-pass classification + duplicate tracking in `objinside`.
+     - Result:
+       - rejected on correctness before benchmark comparison (parser error text/position drift, including `duplicateFields` and `localInObj` assertion mismatches plus golden mismatches in `FileTests` suites).
+     - Resolution: rejected and reverted.
+  2. Conservative pass reduction in `case (exprs, None)` only (single classification pass for fields/asserts while preserving existing duplicate-check stages).
+     - Measurements:
+       - `ParserBenchmark.main`: `1.538 ms/op`
+       - `MainBenchmark.main`: `4.384 ms/op`
+       - `gen_big_object`: `1.882 ms/op`
+       - `realistic1`: `4.260 ms/op`
+     - Resolution: rejected and reverted.
+- Notes:
+  - attempt 1 changed externally checked parser failure behavior, so it was discarded immediately.
+  - attempt 2 preserved correctness but was strongly benchmark-negative on broad and focused gates, so full keep-gate `./mill bench.runRegressions` was intentionally skipped.
+  - detailed evidence is captured in `bench/reports/parser-object-pass-wave.md`.
