@@ -419,3 +419,35 @@
 - Notes:
   - Neither attempt passed the focused gate; full keep-gate `./mill bench.runRegressions` was intentionally skipped.
   - Detailed evidence is captured in `bench/reports/materializer-render-wave.md`.
+
+## Wave 17: string-template-wave2
+- Scope: evaluate a contained JVM string-template wave with two attempts:
+  1. `Format.format` primitive `%` fast path to avoid unnecessary materialization for primitives,
+  2. fallback `std.join` string-separator capacity precompute in `StringModule.Join`.
+- Outcome: reverted; no source code change kept.
+- Correctness checks:
+  - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+- Baseline measurements:
+  - `large_string_template`: `2.777 ms/op`
+  - `realistic1`: `3.214 ms/op`
+  - `large_string_join`: `2.875 ms/op`
+  - `MainBenchmark.main`: `3.136 ms/op`
+- Attempts:
+  1. `Format.format` primitive fast path.
+     - Measurements:
+       - `large_string_template`: `2.442 ms/op`
+       - `realistic1`: `2.942 ms/op`
+       - `large_string_join`: `2.296 ms/op`
+       - `MainBenchmark.main`: `3.286 ms/op`
+     - Resolution: rejected and reverted due broad-gate regression.
+  2. `std.join` string path capacity precompute.
+     - Measurements:
+       - `large_string_template`: `2.465 ms/op`
+       - `realistic1`: `2.956 ms/op`
+       - `large_string_join`: `2.598 ms/op`
+       - `MainBenchmark.main`: `3.652 ms/op`
+     - Resolution: rejected and reverted due strong broad-gate regression.
+- Notes:
+  - both contained attempts improved some targeted template-heavy cases but failed to preserve `MainBenchmark.main`.
+  - full keep-gate `./mill bench.runRegressions` was intentionally skipped because neither attempt was benchmark-positive and both were reverted.
+  - detailed evidence is captured in `bench/reports/string-template-wave2.md`.
