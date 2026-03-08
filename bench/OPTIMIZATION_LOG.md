@@ -485,3 +485,34 @@
 - Notes:
   - attempt 1 was reverted before trying attempt 2 per wave policy.
   - detailed evidence is captured in `bench/reports/format-chunk-wave.md`.
+
+## Wave 19: format-followup-wave
+- Scope: `Format.scala`-only follow-up wave with two contained attempts:
+  1. compact runtime spec/op lowering using sentinel ints + bit/flag metadata,
+  2. fallback builder-oriented append/widen helpers to reduce temporary strings.
+- Outcome: reverted; no source code change kept.
+- Correctness checks (for each attempt):
+  - `./mill __.checkFormat`
+  - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+- Baseline measurements:
+  - `large_string_template`: `2.482 ms/op`
+  - `realistic1`: `2.707 ms/op`
+  - `MainBenchmark.main`: `3.115 ms/op`
+- Attempts:
+  1. Compact runtime spec/op lowering.
+     - Measurements:
+       - `large_string_template`: `3.025 ms/op`
+       - `realistic1`: `3.229 ms/op`
+       - `MainBenchmark.main`: `3.442 ms/op`
+     - Resolution: rejected and reverted.
+  2. Builder-oriented append/widen helpers.
+     - Measurements:
+       - `large_string_template`: `2.697 ms/op`
+       - `realistic1`: `2.924 ms/op`
+       - `MainBenchmark.main`: `4.166 ms/op`
+     - Resolution: rejected and reverted.
+- Notes:
+  - Attempt 1 was reverted before attempting attempt 2, per policy.
+  - Full keep-gate `./mill bench.runRegressions` was intentionally skipped because neither attempt was positive.
+  - Post-revert verification: `git --no-pager diff --name-only -- sjsonnet/src/sjsonnet/Format.scala` was empty; only this log update and `bench/reports/format-followup-wave.md` remained.
+  - Detailed evidence is captured in `bench/reports/format-followup-wave.md`.
