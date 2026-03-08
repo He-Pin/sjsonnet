@@ -11,7 +11,7 @@ package sjsonnet
  * provided Jsonnet [[Val]]s into the final string.
  */
 object Format {
-  private type ParsedFormat = (String, scala.Seq[(FormatSpec, String)])
+  private type ParsedFormat = RuntimeFormat
   private val ParsedFormatCacheMaxEntries = 256
   private val parsedFormatCache =
     new java.util.LinkedHashMap[String, ParsedFormat](ParsedFormatCacheMaxEntries, 0.75f, true) {
@@ -21,6 +21,12 @@ object Format {
         size() > ParsedFormatCacheMaxEntries
       }
     }
+  private final case class RuntimeFormat(
+      leading: String,
+      specs: Array[FormatSpec],
+      literals: Array[String],
+      hasAnyStar: Boolean,
+      staticChars: Int)
   final case class FormatSpec(
       label: Option[String],
       alternate: Boolean,
@@ -101,15 +107,15 @@ object Format {
   }
 
   def format(s: String, values0: Val, pos: Position)(implicit evaluator: EvalScope): String = {
-    val (leading, chunks) = parseFormatCached(s)
-    format(leading, chunks, values0, pos)
+    val parsed = parseFormatCached(s)
+    format(parsed, values0, pos)
   }
 
   private def parseFormatCached(s: String): ParsedFormat = {
     val cached0 = parsedFormatCache.synchronized(parsedFormatCache.get(s))
     if (cached0 != null) cached0
     else {
-      val parsed = fastparse.parse(s, format(_)).get.value
+      val parsed = lowerParsedFormat(fastparse.parse(s, format(_)).get.value)
       parsedFormatCache.synchronized {
         val cached1 = parsedFormatCache.get(s)
         if (cached1 != null) cached1
@@ -121,17 +127,45 @@ object Format {
     }
   }
 
+  private def lowerParsedFormat(
+      parsed: (String, scala.Seq[(FormatSpec, String)])): RuntimeFormat = {
+    val (leading, chunks) = parsed
+    val size = chunks.size
+    val specs = new Array[FormatSpec](size)
+    val literals = new Array[String](size)
+    var staticChars = leading.length
+    var hasAnyStar = false
+    var idx = 0
+    while (idx < size) {
+      val (formatted, literal) = chunks(idx)
+      specs(idx) = formatted
+      literals(idx) = literal
+      staticChars += literal.length
+      hasAnyStar ||= formatted.widthStar || formatted.precisionStar
+      idx += 1
+    }
+    RuntimeFormat(leading, specs, literals, hasAnyStar, staticChars)
+  }
+
   def format(leading: String, chunks: scala.Seq[(FormatSpec, String)], values0: Val, pos: Position)(
       implicit evaluator: EvalScope): String = {
+    format(lowerParsedFormat((leading, chunks)), values0, pos)
+  }
+
+  private def format(parsed: RuntimeFormat, values0: Val, pos: Position)(implicit
+      evaluator: EvalScope): String = {
     val values = values0 match {
       case x: Val.Arr => x
       case x: Val.Obj => x
       case x          => Val.Arr(pos, Array[Eval](x))
     }
-    val output = new StringBuilder
-    output.append(leading)
+    val output = new StringBuilder(parsed.staticChars + parsed.specs.length * 8)
+    output.append(parsed.leading)
     var i = 0
-    for (((rawFormatted, literal), idx) <- chunks.zipWithIndex) {
+    var idx = 0
+    while (idx < parsed.specs.length) {
+      val rawFormatted = parsed.specs(idx)
+      val literal = parsed.literals(idx)
       var formatted = rawFormatted
       val cooked0 = formatted.conversion match {
         case '%' => widenRaw(formatted, "%")
@@ -146,53 +180,57 @@ object Format {
           }
           val raw = formatted.label match {
             case None =>
-              (formatted.widthStar, formatted.precisionStar) match {
-                case (false, false) => values.cast[Val.Arr].value(i)
-                case (true, false)  =>
-                  val width = values.cast[Val.Arr].value(i)
-                  if (!width.isInstanceOf[Val.Num]) {
-                    Error.fail(
-                      "A * was specified at position %d. An integer is expected for a width".format(
-                        idx
+              if (!parsed.hasAnyStar) values.cast[Val.Arr].value(i)
+              else
+                (formatted.widthStar, formatted.precisionStar) match {
+                  case (false, false) => values.cast[Val.Arr].value(i)
+                  case (true, false)  =>
+                    val width = values.cast[Val.Arr].value(i)
+                    if (!width.isInstanceOf[Val.Num]) {
+                      Error.fail(
+                        "A * was specified at position %d. An integer is expected for a width"
+                          .format(
+                            idx
+                          )
                       )
-                    )
-                  }
-                  i += 1
-                  formatted = formatted.updateWithStarValues(Some(width.asInt), None)
-                  values.cast[Val.Arr].value(i)
-                case (false, true) =>
-                  val precision = values.cast[Val.Arr].value(i)
-                  if (!precision.isInstanceOf[Val.Num]) {
-                    Error.fail(
-                      "A * was specified at position %d. An integer is expected for a precision"
-                        .format(idx)
-                    )
-                  }
-                  i += 1
-                  formatted = formatted.updateWithStarValues(None, Some(precision.asInt))
-                  values.cast[Val.Arr].value(i)
-                case (true, true) =>
-                  val width = values.cast[Val.Arr].value(i)
-                  if (!width.isInstanceOf[Val.Num]) {
-                    Error.fail(
-                      "A * was specified at position %d. An integer is expected for a width".format(
-                        idx
+                    }
+                    i += 1
+                    formatted = formatted.updateWithStarValues(Some(width.asInt), None)
+                    values.cast[Val.Arr].value(i)
+                  case (false, true) =>
+                    val precision = values.cast[Val.Arr].value(i)
+                    if (!precision.isInstanceOf[Val.Num]) {
+                      Error.fail(
+                        "A * was specified at position %d. An integer is expected for a precision"
+                          .format(idx)
                       )
-                    )
-                  }
-                  i += 1
-                  val precision = values.cast[Val.Arr].value(i)
-                  if (!precision.isInstanceOf[Val.Num]) {
-                    Error.fail(
-                      "A * was specified at position %d. An integer is expected for a precision"
-                        .format(idx)
-                    )
-                  }
-                  i += 1
-                  formatted =
-                    formatted.updateWithStarValues(Some(width.asInt), Some(precision.asInt))
-                  values.cast[Val.Arr].value(i)
-              }
+                    }
+                    i += 1
+                    formatted = formatted.updateWithStarValues(None, Some(precision.asInt))
+                    values.cast[Val.Arr].value(i)
+                  case (true, true) =>
+                    val width = values.cast[Val.Arr].value(i)
+                    if (!width.isInstanceOf[Val.Num]) {
+                      Error.fail(
+                        "A * was specified at position %d. An integer is expected for a width"
+                          .format(
+                            idx
+                          )
+                      )
+                    }
+                    i += 1
+                    val precision = values.cast[Val.Arr].value(i)
+                    if (!precision.isInstanceOf[Val.Num]) {
+                      Error.fail(
+                        "A * was specified at position %d. An integer is expected for a precision"
+                          .format(idx)
+                      )
+                    }
+                    i += 1
+                    formatted =
+                      formatted.updateWithStarValues(Some(width.asInt), Some(precision.asInt))
+                    values.cast[Val.Arr].value(i)
+                }
             case Some(key) =>
               values match {
                 case v: Val.Arr => v.value(i)
@@ -252,6 +290,7 @@ object Format {
       }
       output.append(cooked0)
       output.append(literal)
+      idx += 1
     }
 
     if (values.isInstanceOf[Val.Arr] && i < values.cast[Val.Arr].length) {
@@ -410,8 +449,8 @@ object Format {
   }
 
   class PartialApplyFmt(fmt: String) extends Val.Builtin1("format", "values") {
-    val (leading, chunks) = fastparse.parse(fmt, format(_)).get.value
+    private[this] val parsed = lowerParsedFormat(fastparse.parse(fmt, format(_)).get.value)
     def evalRhs(values0: Eval, ev: EvalScope, pos: Position): Val =
-      Val.Str(pos, format(leading, chunks, values0.value, pos)(ev))
+      Val.Str(pos, format(parsed, values0.value, pos)(ev))
   }
 }

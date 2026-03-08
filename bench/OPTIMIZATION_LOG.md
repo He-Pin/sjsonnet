@@ -451,3 +451,37 @@
   - both contained attempts improved some targeted template-heavy cases but failed to preserve `MainBenchmark.main`.
   - full keep-gate `./mill bench.runRegressions` was intentionally skipped because neither attempt was benchmark-positive and both were reverted.
   - detailed evidence is captured in `bench/reports/string-template-wave2.md`.
+
+## Wave 18: format-chunk-wave
+- Scope: `Format.scala`-only string-format execution wave with two contained attempts:
+  1. no-star runtime fast path using cached `hasAnyStar` metadata,
+  2. fallback chunk lowering into indexed arrays with precomputed static literal chars + while-loop runtime iteration.
+- Outcome: **kept via attempt 2**.
+- Correctness checks (kept attempt):
+  - `./mill __.checkFormat`
+  - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+- Baseline measurements:
+  - `large_string_template`: `2.625 ms/op`
+  - `realistic1`: `3.146 ms/op`
+  - `MainBenchmark.main`: `3.735 ms/op`
+- Attempts:
+  1. Attempt 1 (`hasAnyStar` no-star fast path).
+     - Measurements:
+       - `large_string_template`: `2.446 ms/op`
+       - `realistic1`: `3.047 ms/op`
+       - `MainBenchmark.main`: `3.943 ms/op`
+     - Resolution: rejected and reverted (broad-gate regression).
+  2. Attempt 2 (lowered runtime chunk arrays + static `StringBuilder` sizing + indexed while loop).
+     - Measurements:
+       - `large_string_template`: `2.512 ms/op`
+       - `realistic1`: `2.673 ms/op`
+       - `MainBenchmark.main`: `3.454 ms/op`
+     - Resolution: kept.
+- Keep-gate:
+  - `./mill bench.runRegressions` succeeded (`125/125`) in `442s`.
+  - full-suite rows include:
+    - `large_string_template`: `2.400 ms/op`
+    - `realistic1`: `2.782 ms/op`
+- Notes:
+  - attempt 1 was reverted before trying attempt 2 per wave policy.
+  - detailed evidence is captured in `bench/reports/format-chunk-wave.md`.
