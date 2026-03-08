@@ -580,3 +580,44 @@
 - Notes:
   - did not retry rejected broad visible-read caching / materializer consumer-hook approaches from `object-read-cache-wave`.
   - detailed evidence is captured in `bench/reports/static-object-wave.md`.
+
+## Wave 22: static-lookup-wave
+- Scope: add one-shot static-layout lookup helpers and static-aware optimizer folds (`Select`, constant-string `Lookup`, and `OP_in`) on top of `static-object-wave`, avoiding broad object read caching.
+- Outcome: **rejected and reverted after Level-4 branch-vs-base proof**.
+- Validation:
+  - `./mill 'sjsonnet.jvm[3.3.7]'.test`
+  - `./mill bench.runJmh -i 1 -wi 1 -f 1 'sjsonnet.bench.MainBenchmark.main'`
+  - `./mill bench.runJmh -i 1 -wi 1 -f 1 'sjsonnet.bench.OptimizerBenchmark.main'`
+  - `./mill bench.runRegressions bench/resources/go_suite/manifestJsonEx.jsonnet`
+  - `./mill bench.runRegressions bench/resources/go_suite/manifestYamlDoc.jsonnet`
+  - `./mill bench.runRegressions bench/resources/go_suite/manifestTomlEx.jsonnet`
+  - `./mill bench.runRegressions bench/resources/cpp_suite/realistic1.jsonnet`
+  - `./mill bench.runRegressions`
+- Measurements:
+  - Initial same-branch snapshots (non-Level-4):
+    - `MainBenchmark.main`: `4.037 -> 3.424 ms/op`
+    - `OptimizerBenchmark.main`: `0.557 -> 0.546 ms/op`
+    - Focused regressions after change:
+      - `manifestJsonEx`: `0.082 ms/op`
+      - `manifestYamlDoc`: `0.082 ms/op`
+      - `manifestTomlEx`: `0.096 ms/op`
+      - `realistic1`: `2.772 ms/op`
+    - Full keep-gate completed in `00:07:22` (exit code `0`), including:
+      - `manifestJsonEx`: `0.077 ms/op`
+      - `manifestYamlDoc`: `0.081 ms/op`
+      - `manifestTomlEx`: `0.092 ms/op`
+      - `realistic1`: `2.764 ms/op`
+      - `comparison2`: `75.605 ms/op`
+  - Level-4 branch-vs-base follow-up (base worktree at `9cc087697a8dc05433da4f6c9aadc0b9cb9e2158`, candidate = same SHA + working-tree wave changes, same machine/JDK 21.0.9 Azul):
+    - `MainBenchmark.main`: `3.442 -> 3.653 ms/op` (branch slower, +6.13%)
+    - `OptimizerBenchmark.main`: `0.573 -> 0.662 ms/op` (branch slower, +15.53%)
+    - `manifestJsonEx`: `0.085 -> 0.077 ms/op` (branch faster, -9.41%)
+    - `manifestYamlDoc`: `0.083 -> 0.081 ms/op` (branch faster, -2.41%)
+    - `manifestTomlEx`: `0.098 -> 0.095 ms/op` (branch faster, -3.06%)
+    - `realistic1`: `2.744 -> 2.688 ms/op` (branch faster, -2.04%)
+- Notes:
+  - change was intentionally narrow to static-layout-backed objects (`Val.staticObject` path) and did not reintroduce rejected visible-read caches.
+  - focused regressions (`manifest*`, `realistic1`) are targeted spot checks for this path and are not by themselves a broad keep claim.
+  - Level-4 branch-vs-base broad gates regressed (`MainBenchmark.main` +6.13%, `OptimizerBenchmark.main` +15.53%), so the lane was rejected.
+  - post-revert verification: `git --no-pager diff -- sjsonnet/src/sjsonnet/Val.scala sjsonnet/src/sjsonnet/StaticOptimizer.scala` returned empty output (no kept source diff).
+  - detailed evidence is captured in `bench/reports/static-lookup-wave.md`.
