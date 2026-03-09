@@ -304,9 +304,25 @@ object ArrayModule extends AbstractFunctionModule {
   }
 
   private object Range extends Val.Builtin2("range", "from", "to") {
+    // 1-entry cache scoped to a single evaluation: avoids re-allocating the same
+    // integer range in comprehension loops (e.g. inner `std.range(1, 1000)` called 1000×).
+    // Invalidated when the EvalScope changes (new evaluation pass).
+    private var cachedEv: EvalScope = null
+    private var cachedFrom = Int.MinValue
+    private var cachedTo = Int.MinValue
+    private var cachedArr: Array[Eval] = null
+
     def evalRhs(from: Eval, to: Eval, ev: EvalScope, pos: Position): Val = {
       val fromInt = from.value.asInt
       val toInt = to.value.asInt
+      if (ev ne cachedEv) {
+        cachedArr = null
+        cachedEv = ev
+      }
+      val ca = cachedArr
+      if (ca != null && fromInt == cachedFrom && toInt == cachedTo) {
+        return Val.Arr(pos, ca)
+      }
       val size = math.max(0, toInt - fromInt + 1)
       val arr = new Array[Eval](size)
       var i = 0
@@ -314,6 +330,9 @@ object ArrayModule extends AbstractFunctionModule {
         arr(i) = Val.Num(pos, fromInt + i)
         i += 1
       }
+      cachedFrom = fromInt
+      cachedTo = toInt
+      cachedArr = arr
       Val.Arr(pos, arr)
     }
   }
