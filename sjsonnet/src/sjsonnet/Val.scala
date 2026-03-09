@@ -380,6 +380,18 @@ object Val {
 
     def getSuper: Obj = `super`
 
+    /** True if this object has a static layout with pre-computed values. */
+    def isStatic: Boolean = static && staticLayout != null
+
+    /** Number of static fields (only valid when isStatic is true). */
+    def staticFieldCount: Int = staticLayout.keys.length
+
+    /** Access static key by index (only valid when isStatic is true). */
+    def staticKeyAt(i: Int): String = staticLayout.keys(i)
+
+    /** Access static value by index (only valid when isStatic is true). */
+    def staticValueAt(i: Int): Val = staticValues(i)
+
     private def getValue0: util.LinkedHashMap[String, Obj.Member] = {
       // value0 is always defined for non-static objects, so if we're computing it here
       // then that implies that the object is static and therefore valueCache should be

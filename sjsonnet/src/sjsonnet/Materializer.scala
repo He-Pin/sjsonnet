@@ -40,7 +40,7 @@ abstract class Materializer {
       case Val.Str(pos, s) => storePos(pos); visitor.visitString(s, -1)
       case obj: Val.Obj    =>
         materializeRecursiveObj(obj, visitor, 0, Materializer.MaterializeContext(evaluator))
-      case Val.Num(pos, _) => storePos(pos); visitor.visitFloat64(v.asDouble, -1)
+      case n: Val.Num => storePos(n.pos); visitor.visitFloat64(v.asDouble, -1)
       case xs: Val.Arr     =>
         materializeRecursiveArr(xs, visitor, 0, Materializer.MaterializeContext(evaluator))
       case Val.True(pos)                    => storePos(pos); visitor.visitTrue(-1)
@@ -78,30 +78,47 @@ abstract class Materializer {
       ctx: Materializer.MaterializeContext)(implicit evaluator: EvalScope): T = {
     storePos(obj.pos)
     obj.triggerAllAsserts(ctx.brokenAssertionLogic)
-    val keys =
-      if (ctx.sort) obj.sortedVisibleKeyNames
-      else obj.visibleKeyNames
-    val ov = visitor.visitObject(keys.length, jsonableKeys = true, -1)
-    var i = 0
-    var prevKey: String = null
-    while (i < keys.length) {
-      val key = keys(i)
-      val childVal = obj.value(key, ctx.emptyPos)
-      storePos(childVal)
-      if (ctx.sort) {
-        if (prevKey != null && Util.compareStringsByCodepoint(key, prevKey) <= 0)
-          Error.fail(
-            s"""Internal error: Unexpected key "$key" after "$prevKey" in sorted object materialization""",
-            childVal.pos
-          )
-        prevKey = key
+    if (obj.isStatic && !ctx.sort) {
+      // Fast path for static objects: iterate directly over pre-computed arrays
+      val n = obj.staticFieldCount
+      val ov = visitor.visitObject(n, jsonableKeys = true, -1)
+      var i = 0
+      while (i < n) {
+        val key = obj.staticKeyAt(i)
+        val childVal = obj.staticValueAt(i)
+        storePos(childVal)
+        ov.visitKeyValue(ov.visitKey(-1).visitString(key, -1))
+        val sub = ov.subVisitor.asInstanceOf[Visitor[T, T]]
+        ov.visitValue(materializeRecursiveChild(childVal, sub, depth, ctx), -1)
+        i += 1
       }
-      ov.visitKeyValue(ov.visitKey(-1).visitString(key, -1))
-      val sub = ov.subVisitor.asInstanceOf[Visitor[T, T]]
-      ov.visitValue(materializeRecursiveChild(childVal, sub, depth, ctx), -1)
-      i += 1
+      ov.visitEnd(-1)
+    } else {
+      val keys =
+        if (ctx.sort) obj.sortedVisibleKeyNames
+        else obj.visibleKeyNames
+      val ov = visitor.visitObject(keys.length, jsonableKeys = true, -1)
+      var i = 0
+      var prevKey: String = null
+      while (i < keys.length) {
+        val key = keys(i)
+        val childVal = obj.value(key, ctx.emptyPos)
+        storePos(childVal)
+        if (ctx.sort) {
+          if (prevKey != null && Util.compareStringsByCodepoint(key, prevKey) <= 0)
+            Error.fail(
+              s"""Internal error: Unexpected key "$key" after "$prevKey" in sorted object materialization""",
+              childVal.pos
+            )
+          prevKey = key
+        }
+        ov.visitKeyValue(ov.visitKey(-1).visitString(key, -1))
+        val sub = ov.subVisitor.asInstanceOf[Visitor[T, T]]
+        ov.visitValue(materializeRecursiveChild(childVal, sub, depth, ctx), -1)
+        i += 1
+      }
+      ov.visitEnd(-1)
     }
-    ov.visitEnd(-1)
   }
 
   @inline private def materializeRecursiveArr[T](
