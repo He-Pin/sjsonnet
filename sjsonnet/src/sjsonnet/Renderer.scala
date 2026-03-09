@@ -48,11 +48,7 @@ class Renderer(out: Writer = new java.io.StringWriter(), indent: Int = -1)
       n /= 10
     }
     val len = 20 - pos
-    elemBuilder.ensureLength(len)
-    while (pos < 20) {
-      elemBuilder.appendUnsafe(digitBuf(pos))
-      pos += 1
-    }
+    elemBuilder.appendAll(digitBuf, pos, len)
   }
   // Pre-computed indent arrays: indentCache(d) = '\n' + indent*d spaces
   private val indentCache: Array[Array[Char]] =

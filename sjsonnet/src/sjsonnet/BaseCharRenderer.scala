@@ -205,11 +205,10 @@ class BaseCharRenderer[T <: upickle.core.CharOps.Output](
 
   protected def appendString(s: String): Unit = {
     val len = s.length
-    var i = 0
     elemBuilder.ensureLength(len)
-    while (i < len) {
-      elemBuilder.appendUnsafeC(s.charAt(i))
-      i += 1
-    }
+    val cbArr = elemBuilder.arr
+    val pos = elemBuilder.getLength
+    s.getChars(0, len, cbArr, pos)
+    elemBuilder.length = pos + len
   }
 }
