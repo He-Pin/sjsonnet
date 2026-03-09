@@ -416,6 +416,16 @@ object Val {
     }
 
     def addSuper(pos: Position, lhs: Val.Obj): Val.Obj = {
+      // Fast path: no super chain — avoid ArrayBuilder + Array allocation
+      if (getSuper == null) {
+        val filteredExcluded = if (excludedKeys != null) {
+          Util.intersect(excludedKeys, getValue0.keySet())
+        } else null
+        return new Val.Obj(
+          this.pos, this.getValue0, false, this.triggerAsserts, lhs,
+          new util.HashMap[Any, Val](), null, filteredExcluded
+        )
+      }
       // Single traversal: collect chain in this-first order
       val builder = new mutable.ArrayBuilder.ofRef[Val.Obj]
       var current = this

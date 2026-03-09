@@ -952,49 +952,81 @@ class Evaluator(
       case Expr.BinaryOp.OP_>> =>
         Val.Num(pos, visitBinaryOpAsDouble(e))
 
-      // Comparison ops: polymorphic (Num/Str/Arr)
+      // Comparison ops: nested match avoids Tuple2 allocation; Num checked first (most common)
       case Expr.BinaryOp.OP_< =>
         val l = visitExpr(e.lhs)
         val r = visitExpr(e.rhs)
-        (l, r) match {
-          case (Val.Str(_, l), Val.Str(_, r)) =>
-            Val.bool(Util.compareStringsByCodepoint(l, r) < 0)
-          case (Val.Num(_, l), Val.Num(_, r)) => Val.bool(l < r)
-          case (x: Val.Arr, y: Val.Arr)       => Val.bool(compare(x, y) < 0)
-          case _                              => failBinOp(l, e.op, r, pos)
+        l match {
+          case ln: Val.Num => r match {
+            case rn: Val.Num => Val.bool(ln.rawDouble < rn.rawDouble)
+            case _           => failBinOp(l, e.op, r, pos)
+          }
+          case ls: Val.Str => r match {
+            case rs: Val.Str => Val.bool(Util.compareStringsByCodepoint(ls.str, rs.str) < 0)
+            case _           => failBinOp(l, e.op, r, pos)
+          }
+          case la: Val.Arr => r match {
+            case ra: Val.Arr => Val.bool(compare(la, ra) < 0)
+            case _           => failBinOp(l, e.op, r, pos)
+          }
+          case _ => failBinOp(l, e.op, r, pos)
         }
 
       case Expr.BinaryOp.OP_> =>
         val l = visitExpr(e.lhs)
         val r = visitExpr(e.rhs)
-        (l, r) match {
-          case (Val.Str(_, l), Val.Str(_, r)) =>
-            Val.bool(Util.compareStringsByCodepoint(l, r) > 0)
-          case (Val.Num(_, l), Val.Num(_, r)) => Val.bool(l > r)
-          case (x: Val.Arr, y: Val.Arr)       => Val.bool(compare(x, y) > 0)
-          case _                              => failBinOp(l, e.op, r, pos)
+        l match {
+          case ln: Val.Num => r match {
+            case rn: Val.Num => Val.bool(ln.rawDouble > rn.rawDouble)
+            case _           => failBinOp(l, e.op, r, pos)
+          }
+          case ls: Val.Str => r match {
+            case rs: Val.Str => Val.bool(Util.compareStringsByCodepoint(ls.str, rs.str) > 0)
+            case _           => failBinOp(l, e.op, r, pos)
+          }
+          case la: Val.Arr => r match {
+            case ra: Val.Arr => Val.bool(compare(la, ra) > 0)
+            case _           => failBinOp(l, e.op, r, pos)
+          }
+          case _ => failBinOp(l, e.op, r, pos)
         }
 
       case Expr.BinaryOp.OP_<= =>
         val l = visitExpr(e.lhs)
         val r = visitExpr(e.rhs)
-        (l, r) match {
-          case (Val.Str(_, l), Val.Str(_, r)) =>
-            Val.bool(Util.compareStringsByCodepoint(l, r) <= 0)
-          case (Val.Num(_, l), Val.Num(_, r)) => Val.bool(l <= r)
-          case (x: Val.Arr, y: Val.Arr)       => Val.bool(compare(x, y) <= 0)
-          case _                              => failBinOp(l, e.op, r, pos)
+        l match {
+          case ln: Val.Num => r match {
+            case rn: Val.Num => Val.bool(ln.rawDouble <= rn.rawDouble)
+            case _           => failBinOp(l, e.op, r, pos)
+          }
+          case ls: Val.Str => r match {
+            case rs: Val.Str => Val.bool(Util.compareStringsByCodepoint(ls.str, rs.str) <= 0)
+            case _           => failBinOp(l, e.op, r, pos)
+          }
+          case la: Val.Arr => r match {
+            case ra: Val.Arr => Val.bool(compare(la, ra) <= 0)
+            case _           => failBinOp(l, e.op, r, pos)
+          }
+          case _ => failBinOp(l, e.op, r, pos)
         }
 
       case Expr.BinaryOp.OP_>= =>
         val l = visitExpr(e.lhs)
         val r = visitExpr(e.rhs)
-        (l, r) match {
-          case (Val.Str(_, l), Val.Str(_, r)) =>
-            Val.bool(Util.compareStringsByCodepoint(l, r) >= 0)
-          case (Val.Num(_, l), Val.Num(_, r)) => Val.bool(l >= r)
-          case (x: Val.Arr, y: Val.Arr)       => Val.bool(compare(x, y) >= 0)
-          case _                              => failBinOp(l, e.op, r, pos)
+        l match {
+          case ln: Val.Num => r match {
+            case rn: Val.Num => Val.bool(ln.rawDouble >= rn.rawDouble)
+            case _           => failBinOp(l, e.op, r, pos)
+          }
+          case ls: Val.Str => r match {
+            case rs: Val.Str => Val.bool(Util.compareStringsByCodepoint(ls.str, rs.str) >= 0)
+            case _           => failBinOp(l, e.op, r, pos)
+          }
+          case la: Val.Arr => r match {
+            case ra: Val.Arr => Val.bool(compare(la, ra) >= 0)
+            case _           => failBinOp(l, e.op, r, pos)
+          }
+          case _ => failBinOp(l, e.op, r, pos)
         }
 
       case Expr.BinaryOp.OP_in =>
@@ -1395,20 +1427,35 @@ class Evaluator(
     case Nil => scopes
   }
 
-  def compare(x: Val, y: Val): Int = (x, y) match {
-    case (_: Val.Null, _: Val.Null) => 0
-    case (x: Val.Num, y: Val.Num)   => x.asDouble.compareTo(y.asDouble)
-    case (x: Val.Str, y: Val.Str)   => Util.compareStringsByCodepoint(x.str, y.str)
-    case (x: Val.Bool, y: Val.Bool) => x.asBoolean.compareTo(y.asBoolean)
-    case (x: Val.Arr, y: Val.Arr)   =>
-      val len = math.min(x.length, y.length)
-      var i = 0
-      while (i < len) {
-        val cmp = compare(x.value(i), y.value(i))
-        if (cmp != 0) return cmp
-        i += 1
-      }
-      Ordering[Int].compare(x.length, y.length)
+  def compare(x: Val, y: Val): Int = x match {
+    case xn: Val.Num => y match {
+      case yn: Val.Num => java.lang.Double.compare(xn.rawDouble, yn.rawDouble)
+      case _ => Error.fail("Cannot compare " + x.prettyName + " with " + y.prettyName, x.pos)
+    }
+    case xs: Val.Str => y match {
+      case ys: Val.Str => Util.compareStringsByCodepoint(xs.str, ys.str)
+      case _ => Error.fail("Cannot compare " + x.prettyName + " with " + y.prettyName, x.pos)
+    }
+    case xb: Val.Bool => y match {
+      case yb: Val.Bool => java.lang.Boolean.compare(xb.asBoolean, yb.asBoolean)
+      case _ => Error.fail("Cannot compare " + x.prettyName + " with " + y.prettyName, x.pos)
+    }
+    case _: Val.Null => y match {
+      case _: Val.Null => 0
+      case _ => Error.fail("Cannot compare " + x.prettyName + " with " + y.prettyName, x.pos)
+    }
+    case xa: Val.Arr => y match {
+      case ya: Val.Arr =>
+        val len = math.min(xa.length, ya.length)
+        var i = 0
+        while (i < len) {
+          val cmp = compare(xa.value(i), ya.value(i))
+          if (cmp != 0) return cmp
+          i += 1
+        }
+        Integer.compare(xa.length, ya.length)
+      case _ => Error.fail("Cannot compare " + x.prettyName + " with " + y.prettyName, x.pos)
+    }
     case _ => Error.fail("Cannot compare " + x.prettyName + " with " + y.prettyName, x.pos)
   }
 
@@ -1423,7 +1470,7 @@ class Evaluator(
       }
     case x: Val.Num =>
       y match {
-        case y: Val.Num => x.asDouble == y.asDouble
+        case y: Val.Num => x.rawDouble == y.rawDouble
         case _          => false
       }
     case x: Val.Arr =>
