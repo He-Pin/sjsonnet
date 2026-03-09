@@ -193,11 +193,17 @@ class Evaluator(
     visitExpr(e.returned)(s)
   }
 
-  def visitComp(e: Comp)(implicit scope: ValScope): Val =
-    Val.Arr(
-      e.pos,
-      visitComp(e.first :: e.rest.toList, Array(scope)).map(s => visitAsLazy(e.value)(s))
-    )
+  def visitComp(e: Comp)(implicit scope: ValScope): Val = {
+    val scopes = visitComp(e.first :: e.rest.toList, Array(scope))
+    val results = new Array[Eval](scopes.length)
+    val body = e.value
+    var i = 0
+    while (i < scopes.length) {
+      results(i) = visitExpr(body)(scopes(i))
+      i += 1
+    }
+    Val.Arr(e.pos, results)
+  }
 
   def visitArr(e: Arr)(implicit scope: ValScope): Val =
     Val.Arr(e.pos, e.value.map(visitAsLazy))
