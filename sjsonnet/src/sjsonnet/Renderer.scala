@@ -68,13 +68,46 @@ class Renderer(out: Writer = new java.io.StringWriter(), indent: Int = -1)
       arr
     }
 
+  // Pre-computed comma+indent arrays: commaIndentCache(d) = ',' + '\n' + indent*d spaces
+  // Merges two separate appends (comma + indent) into a single bulk appendAll per element.
+  private val commaIndentCache: Array[Array[Char]] =
+    if (indent <= 0) null
+    else {
+      val maxD = 16
+      val arr = new Array[Array[Char]](maxD)
+      var d = 0
+      while (d < maxD) {
+        val spaces = indent * d
+        val buf = new Array[Char](spaces + 2)
+        buf(0) = ','
+        buf(1) = '\n'
+        var j = 2; while (j < spaces + 2) { buf(j) = ' '; j += 1 }
+        arr(d) = buf
+        d += 1
+      }
+      arr
+    }
+
   override def flushBuffer(): Unit = {
     if (commaBuffered) {
-      elemBuilder.append(',')
-      if (indent == -1) elemBuilder.append(' ')
-    }
-    if (indent == -1) ()
-    else if (commaBuffered || newlineBuffered) {
+      if (indent == -1) {
+        elemBuilder.append(',')
+        elemBuilder.append(' ')
+      } else if (commaIndentCache != null && depth < commaIndentCache.length) {
+        // Fast path: single bulk append for comma + newline + indent
+        val cached = commaIndentCache(depth)
+        elemBuilder.appendAll(cached, cached.length)
+      } else {
+        elemBuilder.append(',')
+        var i = indent * depth
+        elemBuilder.ensureLength(i + 1)
+        elemBuilder.append('\n')
+        while (i > 0) {
+          elemBuilder.append(' ')
+          i -= 1
+        }
+      }
+    } else if (newlineBuffered && indent > 0) {
       if (indentCache != null && depth < indentCache.length) {
         val cached = indentCache(depth)
         elemBuilder.appendAll(cached, cached.length)
