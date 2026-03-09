@@ -314,12 +314,55 @@ object ArrayModule extends AbstractFunctionModule {
     }
   }
 
+  // Detect pattern: function(acc, elem) acc + elem with string init → use StringBuilder O(n)
+  private def tryStringBuilderFoldl(
+      func: Val.Func,
+      arr: Val.Arr,
+      initStr: String,
+      ev: EvalScope,
+      pos: Position
+  ): Val = {
+    val body = func.bodyExpr
+    if (body == null) return null
+    body match {
+      case e: Expr.BinaryOp if e.op == Expr.BinaryOp.OP_+ =>
+        (e.lhs, e.rhs) match {
+          case (l: Expr.ValidId, r: Expr.ValidId) =>
+            val base = func.defSiteValScope.bindings.length
+            if (l.nameIdx == base && r.nameIdx == base + 1) {
+              val sb = new java.lang.StringBuilder(initStr)
+              val lazyArr = arr.asLazyArray
+              var i = 0
+              while (i < lazyArr.length) {
+                lazyArr(i).value match {
+                  case s: Val.Str => sb.append(s.str)
+                  case v          => sb.append(Materializer.stringify(v)(ev))
+                }
+                i += 1
+              }
+              return Val.Str(pos, sb.toString)
+            }
+            null
+          case _ => null
+        }
+      case _ => null
+    }
+  }
+
   private object Foldl extends Val.Builtin3("foldl", "func", "arr", "init") {
     def evalRhs(_func: Eval, arr: Eval, init: Eval, ev: EvalScope, pos: Position): Val = {
       val func = _func.value.asFunc
       arr.value match {
         case arr: Val.Arr =>
-          var current = init.value
+          val initVal = init.value
+          // Fast path: string concatenation via StringBuilder
+          initVal match {
+            case s: Val.Str =>
+              val result = tryStringBuilderFoldl(func, arr, s.str, ev, pos)
+              if (result != null) return result
+            case _ =>
+          }
+          var current = initVal
           val lazyArr = arr.asLazyArray
           val noOff = pos.noOffset
           var i = 0
