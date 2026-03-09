@@ -194,15 +194,54 @@ class Evaluator(
   }
 
   def visitComp(e: Comp)(implicit scope: ValScope): Val = {
-    val scopes = visitComp(e.first :: e.rest.toList, Array(scope))
-    val results = new Array[Eval](scopes.length)
     val body = e.value
-    var i = 0
-    while (i < scopes.length) {
-      results(i) = visitExpr(body)(scopes(i))
-      i += 1
-    }
-    Val.Arr(e.pos, results)
+    val results = new collection.mutable.ArrayBuilder.ofRef[Eval]
+    results.sizeHint(256)
+    visitCompInline(e.first :: e.rest.toList, scope, body, results)
+    Val.Arr(e.pos, results.result())
+  }
+
+  private def visitCompInline(
+      specs: List[CompSpec],
+      scope: ValScope,
+      body: Expr,
+      results: collection.mutable.ArrayBuilder.ofRef[Eval]): Unit = specs match {
+    case (spec @ ForSpec(_, name, expr)) :: rest =>
+      visitExpr(expr)(scope) match {
+        case a: Val.Arr =>
+          if (debugStats != null) debugStats.arrayCompIterations += a.length
+          val lazyArr = a.asLazyArray
+          var j = 0
+          while (j < lazyArr.length) {
+            val newScope = scope.extendSimple(lazyArr(j))
+            rest match {
+              case Nil => results += visitExpr(body)(newScope)
+              case _   => visitCompInline(rest, newScope, body, results)
+            }
+            j += 1
+          }
+        case r =>
+          Error.fail(
+            "In comprehension, can only iterate over array, not " + r.prettyName,
+            spec
+          )
+      }
+    case (spec @ IfSpec(offset, expr)) :: rest =>
+      visitExpr(expr)(scope) match {
+        case Val.True(_) =>
+          rest match {
+            case Nil => results += visitExpr(body)(scope)
+            case _   => visitCompInline(rest, scope, body, results)
+          }
+        case Val.False(_) => // filtered out
+        case other        =>
+          Error.fail(
+            "Condition must be boolean, got " + other.prettyName,
+            spec
+          )
+      }
+    case Nil =>
+      results += visitExpr(body)(scope)
   }
 
   def visitArr(e: Arr)(implicit scope: ValScope): Val =
