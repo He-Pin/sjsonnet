@@ -54,6 +54,24 @@ class Renderer(out: Writer = new java.io.StringWriter(), indent: Int = -1)
       pos += 1
     }
   }
+  // Pre-computed indent arrays: indentCache(d) = '\n' + indent*d spaces
+  private val indentCache: Array[Array[Char]] =
+    if (indent <= 0) null
+    else {
+      val maxD = 16
+      val arr = new Array[Array[Char]](maxD)
+      var d = 0
+      while (d < maxD) {
+        val spaces = indent * d
+        val buf = new Array[Char](spaces + 1)
+        buf(0) = '\n'
+        var j = 1; while (j <= spaces) { buf(j) = ' '; j += 1 }
+        arr(d) = buf
+        d += 1
+      }
+      arr
+    }
+
   override def flushBuffer(): Unit = {
     if (commaBuffered) {
       elemBuilder.append(',')
@@ -61,12 +79,17 @@ class Renderer(out: Writer = new java.io.StringWriter(), indent: Int = -1)
     }
     if (indent == -1) ()
     else if (commaBuffered || newlineBuffered) {
-      var i = indent * depth
-      elemBuilder.ensureLength(i + 1)
-      elemBuilder.append('\n')
-      while (i > 0) {
-        elemBuilder.append(' ')
-        i -= 1
+      if (indentCache != null && depth < indentCache.length) {
+        val cached = indentCache(depth)
+        elemBuilder.appendAll(cached, cached.length)
+      } else {
+        var i = indent * depth
+        elemBuilder.ensureLength(i + 1)
+        elemBuilder.append('\n')
+        while (i > 0) {
+          elemBuilder.append(' ')
+          i -= 1
+        }
       }
     }
     newlineBuffered = false
