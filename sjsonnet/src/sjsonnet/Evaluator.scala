@@ -1459,17 +1459,20 @@ class Evaluator(
         val len = math.min(xa.length, ya.length)
         var i = 0
         while (i < len) {
-          // Inline numeric fast path to avoid polymorphic compare() dispatch
           val xi = xa.value(i)
           val yi = ya.value(i)
-          val cmp = xi match {
-            case xn: Val.Num => yi match {
-              case yn: Val.Num => java.lang.Double.compare(xn.rawDouble, yn.rawDouble)
-              case _           => compare(xi, yi)
+          // Reference equality short-circuit for shared array elements
+          if (!(xi eq yi)) {
+            // Inline numeric fast path to avoid polymorphic compare() dispatch
+            val cmp = xi match {
+              case xn: Val.Num => yi match {
+                case yn: Val.Num => java.lang.Double.compare(xn.rawDouble, yn.rawDouble)
+                case _           => compare(xi, yi)
+              }
+              case _ => compare(xi, yi)
             }
-            case _ => compare(xi, yi)
+            if (cmp != 0) return cmp
           }
-          if (cmp != 0) return cmp
           i += 1
         }
         Integer.compare(xa.length, ya.length)
