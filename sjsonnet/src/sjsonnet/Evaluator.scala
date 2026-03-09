@@ -211,14 +211,30 @@ class Evaluator(
         case a: Val.Arr =>
           if (debugStats != null) debugStats.arrayCompIterations += a.length
           val lazyArr = a.asLazyArray
-          var j = 0
-          while (j < lazyArr.length) {
-            val newScope = scope.extendSimple(lazyArr(j))
-            rest match {
-              case Nil => results += visitExpr(body)(newScope)
-              case _   => visitCompInline(rest, newScope, body, results)
-            }
-            j += 1
+          rest match {
+            case Nil if lazyArr.length > 1 && isNonCapturingBody(body) =>
+              // Scope reuse: allocate one scope, mutate the binding slot each iteration.
+              // Safe because the body doesn't create lazy values that capture the scope array.
+              val mutableScope = scope.extendMutable()
+              val slot = scope.bindings.length
+              var j = 0
+              while (j < lazyArr.length) {
+                mutableScope.bindings(slot) = lazyArr(j)
+                results += visitExpr(body)(mutableScope)
+                j += 1
+              }
+            case Nil =>
+              var j = 0
+              while (j < lazyArr.length) {
+                results += visitExpr(body)(scope.extendSimple(lazyArr(j)))
+                j += 1
+              }
+            case _ =>
+              var j = 0
+              while (j < lazyArr.length) {
+                visitCompInline(rest, scope.extendSimple(lazyArr(j)), body, results)
+                j += 1
+              }
           }
         case r =>
           Error.fail(
@@ -242,6 +258,35 @@ class Evaluator(
       }
     case Nil =>
       results += visitExpr(body)(scope)
+  }
+
+  /**
+   * Check if a body expression is "non-capturing" — its evaluation result doesn't retain
+   * any reference to the scope bindings array. This makes it safe to reuse a mutable scope
+   * across comprehension iterations.
+   *
+   * Conservative: only returns true for simple expressions (comparisons, arithmetic,
+   * variable reads, literals). Returns false for anything that might create lazy values
+   * (arrays, objects, function applications, etc.).
+   */
+  private def isNonCapturingBody(e: Expr): Boolean = (e.tag: @scala.annotation.switch) match {
+    case ExprTags.ValidId => true
+    case ExprTags.BinaryOp =>
+      val b = e.asInstanceOf[BinaryOp]
+      isNonCapturingBody(b.lhs) && isNonCapturingBody(b.rhs)
+    case ExprTags.UnaryOp =>
+      isNonCapturingBody(e.asInstanceOf[UnaryOp].value)
+    case ExprTags.And =>
+      val a = e.asInstanceOf[And]
+      isNonCapturingBody(a.lhs) && isNonCapturingBody(a.rhs)
+    case ExprTags.Or =>
+      val o = e.asInstanceOf[Or]
+      isNonCapturingBody(o.lhs) && isNonCapturingBody(o.rhs)
+    case ExprTags.IfElse =>
+      val ie = e.asInstanceOf[IfElse]
+      isNonCapturingBody(ie.cond) && isNonCapturingBody(ie.`then`) && isNonCapturingBody(ie.`else`)
+    case _ =>
+      e.isInstanceOf[Val.Literal]
   }
 
   def visitArr(e: Arr)(implicit scope: ValScope): Val =

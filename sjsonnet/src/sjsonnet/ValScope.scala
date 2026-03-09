@@ -45,6 +45,16 @@ final class ValScope private (val bindings: Array[Eval]) extends AnyVal {
     new ValScope(b)
   }
 
+  /**
+   * Create a mutable scope extension. Returns the new scope and the index of the mutable slot.
+   * ONLY safe to use when the caller guarantees that evaluation results do not capture
+   * the scope's bindings array (i.e., the body is "non-capturing").
+   */
+  def extendMutable(): ValScope = {
+    val b = util.Arrays.copyOf(bindings, bindings.length + 1)
+    new ValScope(b)
+  }
+
   def extendSimple(l1: Eval, l2: Eval): ValScope = {
     val b = util.Arrays.copyOf(bindings, bindings.length + 2)
     b(bindings.length) = l1
