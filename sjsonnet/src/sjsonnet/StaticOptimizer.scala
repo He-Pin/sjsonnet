@@ -871,8 +871,16 @@ class StaticOptimizer(
       f: Val.Builtin,
       args: Array[Expr],
       tailstrict: Boolean): Expr = {
-    if (f.staticSafe && args.forall(_.isInstanceOf[Val])) {
-      val vargs = args.map(_.asInstanceOf[Val])
+    if (f.staticSafe) {
+      val vargs = new Array[Val](args.length)
+      var i = 0
+      while (i < args.length) {
+        args(i) match {
+          case v: Val => vargs(i) = v
+          case _      => return null
+        }
+        i += 1
+      }
       val tailstrictMode = if (tailstrict) TailstrictModeEnabled else TailstrictModeDisabled
       try f.apply(vargs, null, pos)(ev, tailstrictMode).asInstanceOf[Expr]
       catch { case _: Exception => null }
@@ -899,46 +907,49 @@ class StaticOptimizer(
       tailstrict: Boolean,
       tailrec: Boolean): Expr = lhs match {
     case f: Val.Builtin =>
-      rebind(args, names, f.params) match {
-        case null    => null
-        case newArgs =>
-          tryStaticApply(pos, f, newArgs, tailstrict) match {
-            case null =>
-              val (f2, rargs) = f.specialize(newArgs, tailstrict) match {
-                case null     => (f, newArgs)
-                case (f2, a2) => (f2, a2)
-              }
-              val alen = rargs.length
-              f2 match {
-                case f2: Val.Builtin0 if alen == 0 => Expr.ApplyBuiltin0(pos, f2, tailstrict)
-                case f2: Val.Builtin1 if alen == 1 =>
-                  Expr.ApplyBuiltin1(pos, f2, rargs(0), tailstrict)
-                case f2: Val.Builtin2 if alen == 2 =>
-                  Expr.ApplyBuiltin2(pos, f2, rargs(0), rargs(1), tailstrict)
-                case f2: Val.Builtin3 if alen == 3 =>
-                  Expr.ApplyBuiltin3(pos, f2, rargs(0), rargs(1), rargs(2), tailstrict)
-                case f2: Val.Builtin4 if alen == 4 =>
-                  Expr.ApplyBuiltin4(pos, f2, rargs(0), rargs(1), rargs(2), rargs(3), tailstrict)
-                case _ if f2.params.names.length == alen =>
-                  Expr.ApplyBuiltin(pos, f2, rargs, tailstrict)
-                case _ => null
-              }
-            case e => e
-          }
-      }
+      val newArgs =
+        if (names == null && args.length == f.params.names.length) args
+        else rebind(args, names, f.params)
+      if (newArgs == null) null
+      else
+        tryStaticApply(pos, f, newArgs, tailstrict) match {
+          case null =>
+            val (f2, rargs) = f.specialize(newArgs, tailstrict) match {
+              case null     => (f, newArgs)
+              case (f2, a2) => (f2, a2)
+            }
+            val alen = rargs.length
+            f2 match {
+              case f2: Val.Builtin0 if alen == 0 => Expr.ApplyBuiltin0(pos, f2, tailstrict)
+              case f2: Val.Builtin1 if alen == 1 =>
+                Expr.ApplyBuiltin1(pos, f2, rargs(0), tailstrict)
+              case f2: Val.Builtin2 if alen == 2 =>
+                Expr.ApplyBuiltin2(pos, f2, rargs(0), rargs(1), tailstrict)
+              case f2: Val.Builtin3 if alen == 3 =>
+                Expr.ApplyBuiltin3(pos, f2, rargs(0), rargs(1), rargs(2), tailstrict)
+              case f2: Val.Builtin4 if alen == 4 =>
+                Expr.ApplyBuiltin4(pos, f2, rargs(0), rargs(1), rargs(2), rargs(3), tailstrict)
+              case _ if f2.params.names.length == alen =>
+                Expr.ApplyBuiltin(pos, f2, rargs, tailstrict)
+              case _ => null
+            }
+          case e => e
+        }
 
     case ValidId(_, name, _) =>
       scope.get(name) match {
         case ScopedVal(Function(_, params, _), _, _) =>
-          rebind(args, names, params) match {
-            case null    => null
-            case newArgs => Apply(pos, lhs, newArgs, null, tailstrict, tailrec)
-          }
+          val newArgs =
+            if (names == null && args.length == params.names.length) args
+            else rebind(args, names, params)
+          if (newArgs == null) null
+          else Apply(pos, lhs, newArgs, null, tailstrict, tailrec)
         case ScopedVal(Bind(_, _, params, _), _, _) =>
-          rebind(args, names, params) match {
-            case null    => null
-            case newArgs => Apply(pos, lhs, newArgs, null, tailstrict, tailrec)
-          }
+          val newArgs =
+            if (names == null && args.length == params.names.length) args
+            else rebind(args, names, params)
+          if (newArgs == null) null
+          else Apply(pos, lhs, newArgs, null, tailstrict, tailrec)
         case _ => null
       }
 
