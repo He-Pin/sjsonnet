@@ -314,39 +314,56 @@ object ArrayModule extends AbstractFunctionModule {
     }
   }
 
-  // Detect pattern: function(acc, elem) acc + elem with string init → use StringBuilder O(n)
-  private def tryStringBuilderFoldl(
-      func: Val.Func,
-      arr: Val.Arr,
-      initStr: String,
-      ev: EvalScope,
-      pos: Position
-  ): Val = {
+  // Detect pattern: function(acc, elem) acc + elem → check body AST for acc + elem structure
+  private def isAccPlusElemPattern(func: Val.Func): Boolean = {
     val body = func.bodyExpr
-    if (body == null) return null
+    if (body == null) return false
     body match {
       case e: Expr.BinaryOp if e.op == Expr.BinaryOp.OP_+ =>
         (e.lhs, e.rhs) match {
           case (l: Expr.ValidId, r: Expr.ValidId) =>
             val base = func.defSiteValScope.bindings.length
-            if (l.nameIdx == base && r.nameIdx == base + 1) {
-              val sb = new java.lang.StringBuilder(initStr)
-              val lazyArr = arr.asLazyArray
-              var i = 0
-              while (i < lazyArr.length) {
-                lazyArr(i).value match {
-                  case s: Val.Str => sb.append(s.str)
-                  case v          => sb.append(Materializer.stringify(v)(ev))
-                }
-                i += 1
-              }
-              return Val.Str(pos, sb.toString)
-            }
-            null
-          case _ => null
+            l.nameIdx == base && r.nameIdx == base + 1
+          case _ => false
         }
-      case _ => null
+      case _ => false
     }
+  }
+
+  // String acc+elem fast path: use StringBuilder for O(n) instead of O(n²)
+  private def stringBuilderFoldl(
+      arr: Val.Arr,
+      initStr: String,
+      ev: EvalScope,
+      pos: Position
+  ): Val = {
+    val sb = new java.lang.StringBuilder(initStr)
+    val lazyArr = arr.asLazyArray
+    var i = 0
+    while (i < lazyArr.length) {
+      lazyArr(i).value match {
+        case s: Val.Str => sb.append(s.str)
+        case v          => sb.append(Materializer.stringify(v)(ev))
+      }
+      i += 1
+    }
+    Val.Str(pos, sb.toString)
+  }
+
+  // Numeric acc+elem fast path: use unboxed double for zero-allocation accumulation
+  private def numericFoldl(
+      arr: Val.Arr,
+      initDouble: Double,
+      pos: Position
+  ): Val = {
+    var sum = initDouble
+    val lazyArr = arr.asLazyArray
+    var i = 0
+    while (i < lazyArr.length) {
+      sum += lazyArr(i).value.asDouble
+      i += 1
+    }
+    Val.Num(pos, sum)
   }
 
   private object Foldl extends Val.Builtin3("foldl", "func", "arr", "init") {
@@ -355,12 +372,13 @@ object ArrayModule extends AbstractFunctionModule {
       arr.value match {
         case arr: Val.Arr =>
           val initVal = init.value
-          // Fast path: string concatenation via StringBuilder
-          initVal match {
-            case s: Val.Str =>
-              val result = tryStringBuilderFoldl(func, arr, s.str, ev, pos)
-              if (result != null) return result
-            case _ =>
+          // Fast paths for function(acc, elem) acc + elem pattern
+          if (isAccPlusElemPattern(func)) {
+            initVal match {
+              case s: Val.Str => return stringBuilderFoldl(arr, s.str, ev, pos)
+              case n: Val.Num => return numericFoldl(arr, n.rawDouble, pos)
+              case _          =>
+            }
           }
           var current = initVal
           val lazyArr = arr.asLazyArray

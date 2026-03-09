@@ -211,6 +211,15 @@ class Evaluator(
         case a: Val.Arr =>
           if (debugStats != null) debugStats.arrayCompIterations += a.length
           val lazyArr = a.asLazyArray
+          // Pre-size hint for nested comprehensions: estimate output as outerLen^(1+innerForCount)
+          if (rest.nonEmpty && lazyArr.length > 64) {
+            val restForCount = rest.count(_.isInstanceOf[ForSpec])
+            if (restForCount > 0) {
+              val estimate = math.pow(lazyArr.length.toDouble, 1 + restForCount).toLong
+              if (estimate > 256 && estimate <= (1 << 22))
+                results.sizeHint(estimate.toInt)
+            }
+          }
           rest match {
             case Nil if lazyArr.length > 1 && isNonCapturingBody(body) =>
               // Scope reuse: allocate one scope, mutate the binding slot each iteration.
