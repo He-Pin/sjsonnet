@@ -931,27 +931,46 @@ class Evaluator(
         Val.Num(pos, visitBinaryOpAsDouble(e))
       case Expr.BinaryOp.OP_/ =>
         Val.Num(pos, visitBinaryOpAsDouble(e))
-      // Polymorphic ops: need visitExpr for type dispatch
+      // Polymorphic ops: nested match avoids Tuple2 allocation; Num checked first (most common)
       case Expr.BinaryOp.OP_% =>
         val l = visitExpr(e.lhs)
         val r = visitExpr(e.rhs)
-        (l, r) match {
-          case (Val.Num(_, l), Val.Num(_, r)) => Val.Num(pos, l % r)
-          case (Val.Str(_, l), r)             => Val.Str(pos, Format.format(l, r, pos))
-          case _                              => failBinOp(l, e.op, r, pos)
+        l match {
+          case ln: Val.Num => r match {
+            case rn: Val.Num => Val.Num(pos, ln.rawDouble % rn.rawDouble)
+            case _           => failBinOp(l, e.op, r, pos)
+          }
+          case ls: Val.Str => Val.Str(pos, Format.format(ls.str, r, pos))
+          case _           => failBinOp(l, e.op, r, pos)
         }
 
       case Expr.BinaryOp.OP_+ =>
         val l = visitExpr(e.lhs)
         val r = visitExpr(e.rhs)
-        (l, r) match {
-          case (Val.Num(_, l), Val.Num(_, r)) => Val.Num(pos, l + r)
-          case (Val.Str(_, l), Val.Str(_, r)) => Val.Str(pos, l + r)
-          case (Val.Str(_, l), r)             => Val.Str(pos, l + Materializer.stringify(r))
-          case (l, Val.Str(_, r))             => Val.Str(pos, Materializer.stringify(l) + r)
-          case (l: Val.Obj, r: Val.Obj)       => r.addSuper(pos, l)
-          case (l: Val.Arr, r: Val.Arr)       => l.concat(pos, r)
-          case _                              => failBinOp(l, e.op, r, pos)
+        l match {
+          case ln: Val.Num => r match {
+            case rn: Val.Num => Val.Num(pos, ln.rawDouble + rn.rawDouble)
+            case rs: Val.Str => Val.Str(pos, Materializer.stringify(l) + rs.str)
+            case _           => failBinOp(l, e.op, r, pos)
+          }
+          case ls: Val.Str => r match {
+            case rs: Val.Str => Val.Str(pos, ls.str + rs.str)
+            case _           => Val.Str(pos, ls.str + Materializer.stringify(r))
+          }
+          case lo: Val.Obj => r match {
+            case ro: Val.Obj => ro.addSuper(pos, lo)
+            case rs: Val.Str => Val.Str(pos, Materializer.stringify(l) + rs.str)
+            case _           => failBinOp(l, e.op, r, pos)
+          }
+          case la: Val.Arr => r match {
+            case ra: Val.Arr => la.concat(pos, ra)
+            case rs: Val.Str => Val.Str(pos, Materializer.stringify(l) + rs.str)
+            case _           => failBinOp(l, e.op, r, pos)
+          }
+          case _ => r match {
+            case rs: Val.Str => Val.Str(pos, Materializer.stringify(l) + rs.str)
+            case _           => failBinOp(l, e.op, r, pos)
+          }
         }
 
       // Shift ops: pure numeric with safe-integer range check
