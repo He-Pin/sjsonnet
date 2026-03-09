@@ -255,7 +255,6 @@ object ArrayModule extends AbstractFunctionModule {
   private object Member extends Val.Builtin2("member", "arr", "x") {
     def evalRhs(arr: Eval, x: Eval, ev: EvalScope, pos: Position): Val = {
       Val.bool(
-        pos,
         arr.value match {
           case str: Val.Str =>
             val secondArg = x.value match {
@@ -276,11 +275,18 @@ object ArrayModule extends AbstractFunctionModule {
   }
 
   private object Range extends Val.Builtin2("range", "from", "to") {
-    def evalRhs(from: Eval, to: Eval, ev: EvalScope, pos: Position): Val =
-      Val.Arr(
-        pos,
-        (from.value.asInt to to.value.asInt).map(i => Val.Num(pos, i)).toArray
-      )
+    def evalRhs(from: Eval, to: Eval, ev: EvalScope, pos: Position): Val = {
+      val fromInt = from.value.asInt
+      val toInt = to.value.asInt
+      val size = math.max(0, toInt - fromInt + 1)
+      val arr = new Array[Eval](size)
+      var i = 0
+      while (i < size) {
+        arr(i) = Val.Num(pos, fromInt + i)
+        i += 1
+      }
+      Val.Arr(pos, arr)
+    }
   }
 
   private object Foldl extends Val.Builtin3("foldl", "func", "arr", "init") {
