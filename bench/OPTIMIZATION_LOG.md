@@ -621,3 +621,53 @@
   - Level-4 branch-vs-base broad gates regressed (`MainBenchmark.main` +6.13%, `OptimizerBenchmark.main` +15.53%), so the lane was rejected.
   - post-revert verification: `git --no-pager diff -- sjsonnet/src/sjsonnet/Val.scala sjsonnet/src/sjsonnet/StaticOptimizer.scala` returned empty output (no kept source diff).
   - detailed evidence is captured in `bench/reports/static-lookup-wave.md`.
+
+## Wave 23: optimizer-helper-wave
+- Scope: while-loop in `tryStaticApply` replacing `forall`+`map`, short-circuit rebind when positional args match arity.
+- Outcome: **kept**.
+- Commit: `9a67672f`
+- Validation:
+  - Tests: 59/59 passed
+  - Full regression suite: 125/125 SUCCESS in 446s
+  - A/B comparison:
+    - `realistic1`: `3.137 → 2.658 ms/op` (-15.3%)
+    - `gen_big_object`: `1.271 → 1.163 ms/op` (-8.5%)
+    - `bench.06`: `0.463 → 0.427 ms/op` (-7.8%)
+    - `bench.07`: `3.578 → 3.317 ms/op` (-7.3%)
+
+## Wave 24: evaluator-allocation-wave
+- Scope: replace `map` with while-loops in `visitApply`, `visitArr`, `visitComp`; add `visitCompArr` array-based comprehension handler.
+- Outcome: **rejected**.
+- Reason: A/B benchmark comparison showed essentially neutral results. Some benchmarks showed slight improvements, others slight regressions — all within noise.
+- Key insight: JVM JIT already optimizes evaluator core loops well; while-loop replacements provide no benefit.
+
+## Wave 25: stdlib-allocation-wave
+- Scope: Range while-loop, Foldl while-loop, sum/avg while-loop, contains while-loop in stdlib.
+- Outcome: **rejected**.
+- Reason: A/B comparison showed neutral/mixed results. Isolated Range-only change caused `comparison2` to regress significantly (75→99 ms).
+- Key insight: Scala `Range.map` chain is optimized better by JIT than manual while-loops.
+
+## Wave 26: optimizer-cleanup-wave
+- Scope: Replace `forall`+`map` with single while-loop in `Arr` literal folding; replace `forall` with while-loop in `optimizeMemberList`.
+- Outcome: **rejected**.
+- Reason: Changes are correct but optimizer runs once per cold load, so improvements are too small to measure in hot benchmarks (all within noise).
+
+## Wave 27: new-evaluator-default
+- Scope: Enable `NewEvaluator` (tag-based `@switch` dispatch) as default.
+- Outcome: **rejected**.
+- Reason: NewEvaluator is 7-10% slower across all benchmarks despite using `@switch` dispatch.
+- Key insight: JIT optimizes pattern-match cascade better than `@switch` on byte tags with `asInstanceOf` casts.
+- Results:
+  - `comparison2`: `76.775 → 82.423 ms/op` (+7.4% regression)
+  - `bench.02`: `48.671 → 53.722 ms/op` (+10.4% regression)
+
+## Wave 28: sort-inplace-wave
+- Scope: Replace `map`+`sortBy` chain with in-place `java.util.Arrays.sort` for numeric and string sorting in `SetModule.sortArr`.
+- Outcome: **kept**.
+- Commit: `af1e090e`
+- Validation:
+  - Tests: all passed (177 in main suite)
+  - Full regression suite: 35/35 benchmarks pass with no regressions
+  - A/B comparison:
+    - `bench.06` (sort benchmark): `0.481 → 0.430 ms/op` (-10.6%)
+  - Second confirmation: `0.481 → 0.430 ms/op` (-10.6%)
