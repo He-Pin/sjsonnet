@@ -182,6 +182,15 @@ object Val {
     override def asBoolean: Boolean = this.isInstanceOf[True]
   }
 
+   /** Shared singletons for runtime boolean results — avoids per-comparison allocation. */
+  val staticTrue: Bool = True(Position(null, -1))
+  val staticFalse: Bool = False(Position(null, -1))
+  val staticNull: Null = Null(Position(null, -1))
+
+  /** Returns a shared singleton boolean. Use for runtime comparison results where position is not needed. */
+  def bool(b: Boolean): Bool = if (b) staticTrue else staticFalse
+
+  /** Returns a positioned boolean. Use in parser/optimizer where AST position tracking matters. */
   def bool(pos: Position, b: Boolean): Bool = if (b) True(pos) else False(pos)
 
   final case class True(var pos: Position) extends Bool {
