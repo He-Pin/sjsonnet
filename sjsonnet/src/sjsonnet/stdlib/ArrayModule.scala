@@ -659,22 +659,18 @@ object ArrayModule extends AbstractFunctionModule {
       Val.Arr(arr.pos, result)
     },
     builtin("sum", "arr") { (_, _, arr: Val.Arr) =>
-      if (!arr.forall(_.isInstanceOf[Val.Num])) {
-        Error.fail("Argument must be an array of numbers")
-      }
       val a = arr.asLazyArray
       var sum = 0.0
       var i = 0
       while (i < a.length) {
-        sum += a(i).value.asDouble
+        val v = a(i).value
+        if (!v.isInstanceOf[Val.Num]) Error.fail("Argument must be an array of numbers")
+        sum += v.asInstanceOf[Val.Num].asDouble
         i += 1
       }
       sum
     },
     builtin("avg", "arr") { (_, _, arr: Val.Arr) =>
-      if (!arr.forall(_.isInstanceOf[Val.Num])) {
-        Error.fail("Argument must be an array of numbers")
-      }
       if (arr.length == 0) {
         Error.fail("Cannot calculate average of an empty array")
       }
@@ -682,7 +678,9 @@ object ArrayModule extends AbstractFunctionModule {
       var sum = 0.0
       var i = 0
       while (i < a.length) {
-        sum += a(i).value.asDouble
+        val v = a(i).value
+        if (!v.isInstanceOf[Val.Num]) Error.fail("Argument must be an array of numbers")
+        sum += v.asInstanceOf[Val.Num].asDouble
         i += 1
       }
       sum / arr.length
