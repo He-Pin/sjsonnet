@@ -79,7 +79,8 @@ object Format {
   )
 
   def widenRaw(formatted: FormatSpec, txt: String): String =
-    widen(formatted, "", "", txt, numeric = false, signedConversion = false)
+    if (formatted.width.isEmpty) txt // fast path: no width/padding needed
+    else widen(formatted, "", "", txt, numeric = false, signedConversion = false)
   def widen(
       formatted: FormatSpec,
       lhs: String,
@@ -95,8 +96,11 @@ object Format {
 
     val missingWidth = formatted.width.getOrElse(-1) - lhs2.length - mhs.length - rhs.length
 
-    if (missingWidth <= 0) lhs2 + mhs + rhs
-    else if (formatted.zeroPadded) {
+    if (missingWidth <= 0) {
+      if (lhs2.isEmpty && mhs.isEmpty) rhs
+      else if (lhs2.isEmpty) mhs + rhs
+      else lhs2 + mhs + rhs
+    } else if (formatted.zeroPadded) {
       if (numeric) lhs2 + mhs + "0" * missingWidth + rhs
       else {
         if (formatted.leftAdjusted) lhs2 + mhs + rhs + " " * missingWidth
@@ -238,18 +242,17 @@ object Format {
                 case _          => Error.fail("Invalid format values")
               }
           }
-          val value = raw.value match {
+          val rawVal = raw.value
+          val formattedValue = rawVal match {
             case f: Val.Func => Error.fail("Cannot format function value", f)
-            case r: Val.Arr  => Materializer.apply0(r, new Renderer(indent = -1))
-            case r: Val.Obj  => Materializer.apply0(r, new Renderer(indent = -1))
-            case raw         => Materializer(raw)
-          }
-          val formattedValue = value match {
-            case ujson.Str(s) =>
+            case vs: Val.Str =>
+              // Fast path: skip Materializer for strings
               if (formatted.conversion != 's' && formatted.conversion != 'c')
                 Error.fail("Format required a number at %d, got string".format(i))
-              widenRaw(formatted, s)
-            case ujson.Num(s) =>
+              widenRaw(formatted, vs.str)
+            case vn: Val.Num =>
+              // Fast path: skip Materializer for numbers
+              val s = vn.asDouble
               formatted.conversion match {
                 case 'd' | 'i' | 'u' => formatInteger(formatted, s)
                 case 'o'             => formatOctal(formatted, s)
@@ -265,25 +268,53 @@ object Format {
                   if (s.toLong == s) widenRaw(formatted, s.toLong.toString)
                   else widenRaw(formatted, s.toString)
                 case _ =>
-                  Error.fail("Format required a %s at %d, got string".format(raw.prettyName, i))
+                  Error.fail("Format required a %s at %d, got string".format(rawVal.prettyName, i))
               }
-            case ujson.Bool(s) =>
+            case _: Val.True =>
+              // Fast path: skip Materializer for booleans
+              val b = 1
               formatted.conversion match {
-                case 'd' | 'i' | 'u' => formatInteger(formatted, s.compareTo(false))
-                case 'o'             => formatOctal(formatted, s.compareTo(false))
-                case 'x'             => formatHexadecimal(formatted, s.compareTo(false))
-                case 'X'             => formatHexadecimal(formatted, s.compareTo(false)).toUpperCase
-                case 'e'             => formatExponent(formatted, s.compareTo(false)).toLowerCase
-                case 'E'             => formatExponent(formatted, s.compareTo(false))
-                case 'f' | 'F'       => formatFloat(formatted, s.compareTo(false))
-                case 'g'             => formatGeneric(formatted, s.compareTo(false)).toLowerCase
-                case 'G'             => formatGeneric(formatted, s.compareTo(false))
-                case 'c' => widenRaw(formatted, Character.forDigit(s.compareTo(false), 10).toString)
-                case 's' => widenRaw(formatted, s.toString)
+                case 'd' | 'i' | 'u' => formatInteger(formatted, b)
+                case 'o'             => formatOctal(formatted, b)
+                case 'x'             => formatHexadecimal(formatted, b)
+                case 'X'             => formatHexadecimal(formatted, b).toUpperCase
+                case 'e'             => formatExponent(formatted, b).toLowerCase
+                case 'E'             => formatExponent(formatted, b)
+                case 'f' | 'F'       => formatFloat(formatted, b)
+                case 'g'             => formatGeneric(formatted, b).toLowerCase
+                case 'G'             => formatGeneric(formatted, b)
+                case 'c' => widenRaw(formatted, Character.forDigit(b, 10).toString)
+                case 's' => widenRaw(formatted, "true")
                 case _   =>
-                  Error.fail("Format required a %s at %d, got string".format(raw.prettyName, i))
+                  Error.fail("Format required a %s at %d, got string".format(rawVal.prettyName, i))
               }
-            case v => widenRaw(formatted, v.toString)
+            case _: Val.False =>
+              val b = 0
+              formatted.conversion match {
+                case 'd' | 'i' | 'u' => formatInteger(formatted, b)
+                case 'o'             => formatOctal(formatted, b)
+                case 'x'             => formatHexadecimal(formatted, b)
+                case 'X'             => formatHexadecimal(formatted, b).toUpperCase
+                case 'e'             => formatExponent(formatted, b).toLowerCase
+                case 'E'             => formatExponent(formatted, b)
+                case 'f' | 'F'       => formatFloat(formatted, b)
+                case 'g'             => formatGeneric(formatted, b).toLowerCase
+                case 'G'             => formatGeneric(formatted, b)
+                case 'c' => widenRaw(formatted, Character.forDigit(b, 10).toString)
+                case 's' => widenRaw(formatted, "false")
+                case _   =>
+                  Error.fail("Format required a %s at %d, got string".format(rawVal.prettyName, i))
+              }
+            case _: Val.Null =>
+              widenRaw(formatted, "null")
+            case _ =>
+              // Complex types (Arr, Obj): materialize via Renderer
+              val value = rawVal match {
+                case r: Val.Arr => Materializer.apply0(r, new Renderer(indent = -1))
+                case r: Val.Obj => Materializer.apply0(r, new Renderer(indent = -1))
+                case _          => Materializer(rawVal)
+              }
+              widenRaw(formatted, value.toString)
           }
           i += 1
           formattedValue
@@ -311,19 +342,22 @@ object Format {
   }
 
   private def formatInteger(formatted: FormatSpec, s: Double): String = {
-    val i = truncateToInteger(s)
-    val negative = i.signum < 0
-    val lhs = if (negative) "-" else ""
-    val rhs = i.abs.toString(10)
-    val rhs2 = precisionPad(lhs, rhs, formatted.precision)
-    widen(
-      formatted,
-      lhs,
-      "",
-      rhs2,
-      numeric = true,
-      signedConversion = !negative
-    )
+    val sl = s.toLong
+    if (sl.toDouble == s) {
+      // Fast path: value fits in Long — avoid BigInt allocation
+      val negative = sl < 0
+      val lhs = if (negative) "-" else ""
+      val rhs = java.lang.Long.toString(if (negative) -sl else sl, 10)
+      val rhs2 = precisionPad(lhs, rhs, formatted.precision)
+      widen(formatted, lhs, "", rhs2, numeric = true, signedConversion = !negative)
+    } else {
+      val i = BigDecimal(s).toBigInt
+      val negative = i.signum < 0
+      val lhs = if (negative) "-" else ""
+      val rhs = i.abs.toString(10)
+      val rhs2 = precisionPad(lhs, rhs, formatted.precision)
+      widen(formatted, lhs, "", rhs2, numeric = true, signedConversion = !negative)
+    }
   }
 
   private def formatFloat(formatted: FormatSpec, s: Double): String = {
@@ -347,35 +381,47 @@ object Format {
   }
 
   private def formatOctal(formatted: FormatSpec, s: Double): String = {
-    val i = truncateToInteger(s)
-    val negative = i.signum < 0
-    val lhs = if (negative) "-" else ""
-    val rhs = i.abs.toString(8)
-    val rhs2 = precisionPad(lhs, rhs, formatted.precision)
-    widen(
-      formatted,
-      lhs,
-      if (!formatted.alternate || rhs2(0) == '0') "" else "0",
-      rhs2,
-      numeric = true,
-      signedConversion = !negative
-    )
+    val sl = s.toLong
+    if (sl.toDouble == s) {
+      val negative = sl < 0
+      val lhs = if (negative) "-" else ""
+      val rhs = java.lang.Long.toString(if (negative) -sl else sl, 8)
+      val rhs2 = precisionPad(lhs, rhs, formatted.precision)
+      widen(formatted, lhs,
+        if (!formatted.alternate || rhs2.charAt(0) == '0') "" else "0",
+        rhs2, numeric = true, signedConversion = !negative)
+    } else {
+      val i = BigDecimal(s).toBigInt
+      val negative = i.signum < 0
+      val lhs = if (negative) "-" else ""
+      val rhs = i.abs.toString(8)
+      val rhs2 = precisionPad(lhs, rhs, formatted.precision)
+      widen(formatted, lhs,
+        if (!formatted.alternate || rhs2.charAt(0) == '0') "" else "0",
+        rhs2, numeric = true, signedConversion = !negative)
+    }
   }
 
   private def formatHexadecimal(formatted: FormatSpec, s: Double): String = {
-    val i = truncateToInteger(s)
-    val negative = i.signum < 0
-    val lhs = if (negative) "-" else ""
-    val rhs = i.abs.toString(16)
-    val rhs2 = precisionPad(lhs, rhs, formatted.precision)
-    widen(
-      formatted,
-      lhs,
-      if (!formatted.alternate) "" else "0x",
-      rhs2,
-      numeric = true,
-      signedConversion = !negative
-    )
+    val sl = s.toLong
+    if (sl.toDouble == s) {
+      val negative = sl < 0
+      val lhs = if (negative) "-" else ""
+      val rhs = java.lang.Long.toString(if (negative) -sl else sl, 16)
+      val rhs2 = precisionPad(lhs, rhs, formatted.precision)
+      widen(formatted, lhs,
+        if (!formatted.alternate) "" else "0x",
+        rhs2, numeric = true, signedConversion = !negative)
+    } else {
+      val i = BigDecimal(s).toBigInt
+      val negative = i.signum < 0
+      val lhs = if (negative) "-" else ""
+      val rhs = i.abs.toString(16)
+      val rhs2 = precisionPad(lhs, rhs, formatted.precision)
+      widen(formatted, lhs,
+        if (!formatted.alternate) "" else "0x",
+        rhs2, numeric = true, signedConversion = !negative)
+    }
   }
 
   private def precisionPad(lhs: String, rhs: String, precision: Option[Int]): String = {
