@@ -20,10 +20,15 @@ object DecimalFormat {
   }
 
   private def leftPad(n: Long, targetWidth: Int): String = {
-    val sign = if (n < 0) "-" else ""
     val absN = math.abs(n)
     val nWidth = if (absN == 0) 1 else Math.log10(absN.toDouble).toInt + 1
-    sign + "0" * (targetWidth - nWidth) + absN
+    val padCount = targetWidth - nWidth
+    val sb = new java.lang.StringBuilder(targetWidth + 2)
+    if (n < 0) sb.append('-')
+    var i = 0
+    while (i < padCount) { sb.append('0'); i += 1 }
+    sb.append(absN)
+    sb.toString
   }
 
   private def rightPad(n0: Long, minWidth: Int, maxWidth: Int): String = {
@@ -32,7 +37,13 @@ object DecimalFormat {
       val n = (n0 / Math.pow(10, trailingZeroes(n0))).toInt
       assert(n == math.abs(n))
       val nWidth = if (n == 0) 1 else Math.log10(n).toInt + 1
-      ("" + n + "0" * (minWidth - nWidth)).take(maxWidth)
+      val sb = new java.lang.StringBuilder(maxWidth + 2)
+      sb.append(n)
+      var i = 0
+      val padCount = minWidth - nWidth
+      while (i < padCount) { sb.append('0'); i += 1 }
+      val str = sb.toString
+      if (str.length > maxWidth) str.substring(0, maxWidth) else str
     }
   }
 
@@ -52,18 +63,23 @@ object DecimalFormat {
         val precision = zeroes + hashes
 
         (precision, alternate) match {
-          case (0, false) => prefix + "E" + expFrag
-          case (0, true)  => prefix + ".E" + expFrag
-          case (_, _)     =>
+          case (0, false) =>
+            val sb = new java.lang.StringBuilder(prefix.length + 1 + expFrag.length)
+            sb.append(prefix).append('E').append(expFrag).toString
+          case (0, true) =>
+            val sb = new java.lang.StringBuilder(prefix.length + 2 + expFrag.length)
+            sb.append(prefix).append('.').append('E').append(expFrag).toString
+          case (_, _) =>
             val divided = number / Math.pow(10, (expNum - precision).toDouble)
             val scaledFrac = divided % Math.pow(10, precision)
             val frac = rightPad(Math.abs(Math.round(scaledFrac)), zeroes, precision)
             if (frac.isEmpty) {
-              prefix + "E" + expFrag
+              val sb = new java.lang.StringBuilder(prefix.length + 1 + expFrag.length)
+              sb.append(prefix).append('E').append(expFrag).toString
             } else {
-              prefix + "." + frac + "E" + expFrag
+              val sb = new java.lang.StringBuilder(prefix.length + 2 + frac.length + expFrag.length)
+              sb.append(prefix).append('.').append(frac).append('E').append(expFrag).toString
             }
-
         }
 
       case None =>
@@ -87,8 +103,15 @@ object DecimalFormat {
 
         (precision, alternate) match {
           case (0, false) => prefix
-          case (0, true)  => prefix + "."
-          case (_, _)     => if (frac.isEmpty) prefix else prefix + "." + frac
+          case (0, true) =>
+            val sb = new java.lang.StringBuilder(prefix.length + 1)
+            sb.append(prefix).append('.').toString
+          case (_, _) =>
+            if (frac.isEmpty) prefix
+            else {
+              val sb = new java.lang.StringBuilder(prefix.length + 1 + frac.length)
+              sb.append(prefix).append('.').append(frac).toString
+            }
         }
     }
   }
