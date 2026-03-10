@@ -90,7 +90,14 @@ object ArrayModule extends AbstractFunctionModule {
 
   private object Any extends Val.Builtin1("any", "arr") {
     def evalRhs(arr: Eval, ev: EvalScope, pos: Position): Val = {
-      Val.bool(arr.value.asArr.iterator.exists(v => v.asBoolean))
+      val a = arr.value.asArr
+      var i = 0
+      var found = false
+      while (i < a.length && !found) {
+        if (a.value(i).asBoolean) found = true
+        i += 1
+      }
+      Val.bool(found)
     }
   }
 
