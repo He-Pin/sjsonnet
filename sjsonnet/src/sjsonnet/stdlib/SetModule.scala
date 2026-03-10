@@ -92,9 +92,14 @@ object SetModule extends AbstractFunctionModule {
       Val.Arr(
         pos,
         if (keyFFunc != null) {
-          val keys: Array[Val] = vs.map(v =>
-            keyFFunc(Array(v.value), null, pos.noOffset)(ev, TailstrictModeDisabled).value
-          )
+          val keys = new Array[Val](vs.length)
+          val argBuf = new Array[Val](1)
+          var i = 0
+          while (i < vs.length) {
+            argBuf(0) = vs(i).value
+            keys(i) = keyFFunc(argBuf, null, pos.noOffset)(ev, TailstrictModeDisabled).value
+            i += 1
+          }
           val keyType = keys(0).getClass
           if (classOf[Val.Bool].isAssignableFrom(keyType)) {
             Error.fail("Cannot sort with key values that are booleans")
@@ -115,9 +120,20 @@ object SetModule extends AbstractFunctionModule {
             Error.fail("Cannot sort with key values that are " + keys(0).prettyName + "s")
           }
 
-          sortedIndices.map(i => vs(i))
+          val result = new Array[Eval](sortedIndices.length)
+          var j = 0
+          while (j < sortedIndices.length) {
+            result(j) = vs(sortedIndices(j))
+            j += 1
+          }
+          result
         } else {
-          val strict = vs.map(_.value)
+          val strict = new Array[Val](vs.length)
+          var i = 0
+          while (i < vs.length) {
+            strict(i) = vs(i).value
+            i += 1
+          }
           val keyType = strict(0).getClass
           if (classOf[Val.Bool].isAssignableFrom(keyType)) {
             Error.fail("Cannot sort with values that are booleans")
