@@ -226,11 +226,41 @@ class Evaluator(
               // Safe because the body doesn't create lazy values that capture the scope array.
               val mutableScope = scope.extendMutable()
               val slot = scope.bindings.length
-              var j = 0
-              while (j < lazyArr.length) {
-                mutableScope.bindings(slot) = lazyArr(j)
-                results += visitExpr(body)(mutableScope)
-                j += 1
+              val bindings = mutableScope.bindings
+              body match {
+                case binOp: BinaryOp
+                    if binOp.lhs.tag == ExprTags.ValidId
+                      && binOp.rhs.tag == ExprTags.ValidId =>
+                  // Fast path: inline scope lookups and binary-op dispatch,
+                  // avoiding 3× visitExpr dispatch overhead per iteration.
+                  val lhsIdx = binOp.lhs.asInstanceOf[ValidId].nameIdx
+                  val rhsIdx = binOp.rhs.asInstanceOf[ValidId].nameIdx
+                  val op = binOp.op
+                  val bpos = binOp.pos
+                  var j = 0
+                  while (j < lazyArr.length) {
+                    bindings(slot) = lazyArr(j)
+                    val l = bindings(lhsIdx).value
+                    val r = bindings(rhsIdx).value
+                    l match {
+                      case ln: Val.Num => r match {
+                        case rn: Val.Num =>
+                          results += evalBinaryOpNumNum(op, ln, rn, bpos)
+                        case _ =>
+                          results += visitBinaryOpValues(op, l, r, bpos)
+                      }
+                      case _ =>
+                        results += visitBinaryOpValues(op, l, r, bpos)
+                    }
+                    j += 1
+                  }
+                case _ =>
+                  var j = 0
+                  while (j < lazyArr.length) {
+                    bindings(slot) = lazyArr(j)
+                    results += visitExpr(body)(mutableScope)
+                    j += 1
+                  }
               }
             case Nil =>
               var j = 0
@@ -296,6 +326,118 @@ class Evaluator(
       isNonCapturingBody(ie.cond) && isNonCapturingBody(ie.`then`) && isNonCapturingBody(ie.`else`)
     case _ =>
       e.isInstanceOf[Val.Literal]
+  }
+
+  /**
+   * Fast-path binary op evaluation for Num-Num operands.
+   * Handles comparison, arithmetic, and modulo without any visitExpr dispatch overhead.
+   */
+  @inline private def evalBinaryOpNumNum(op: Int, ln: Val.Num, rn: Val.Num, pos: Position): Val.Literal = {
+    (op: @scala.annotation.switch) match {
+      case Expr.BinaryOp.OP_<  => Val.bool(ln.rawDouble < rn.rawDouble)
+      case Expr.BinaryOp.OP_>  => Val.bool(ln.rawDouble > rn.rawDouble)
+      case Expr.BinaryOp.OP_<= => Val.bool(ln.rawDouble <= rn.rawDouble)
+      case Expr.BinaryOp.OP_>= => Val.bool(ln.rawDouble >= rn.rawDouble)
+      case Expr.BinaryOp.OP_== => Val.bool(ln.rawDouble == rn.rawDouble)
+      case Expr.BinaryOp.OP_!= => Val.bool(ln.rawDouble != rn.rawDouble)
+      case Expr.BinaryOp.OP_+  => Val.Num(pos, ln.rawDouble + rn.rawDouble)
+      case Expr.BinaryOp.OP_-  => Val.Num(pos, ln.rawDouble - rn.rawDouble)
+      case Expr.BinaryOp.OP_*  => Val.Num(pos, ln.rawDouble * rn.rawDouble)
+      case Expr.BinaryOp.OP_/  => Val.Num(pos, ln.rawDouble / rn.rawDouble)
+      case Expr.BinaryOp.OP_%  => Val.Num(pos, ln.rawDouble % rn.rawDouble)
+      case _                   => visitBinaryOpValues(op, ln, rn, pos)
+    }
+  }
+
+  /**
+   * Evaluate a binary op on two pre-evaluated values. Covers the polymorphic operators
+   * that first evaluate both sides then dispatch on types (comparison, equality, +, %, in).
+   * Used as a fallback when the Num-Num fast path doesn't apply.
+   */
+  private def visitBinaryOpValues(op: Int, l: Val, r: Val, pos: Position): Val.Literal = {
+    (op: @scala.annotation.switch) match {
+      case Expr.BinaryOp.OP_< =>
+        l match {
+          case ln: Val.Num => r match {
+            case rn: Val.Num => Val.bool(ln.rawDouble < rn.rawDouble)
+            case _           => failBinOp(l, op, r, pos)
+          }
+          case ls: Val.Str => r match {
+            case rs: Val.Str => Val.bool(Util.compareStringsByCodepoint(ls.str, rs.str) < 0)
+            case _           => failBinOp(l, op, r, pos)
+          }
+          case la: Val.Arr => r match {
+            case ra: Val.Arr => Val.bool(compare(la, ra) < 0)
+            case _           => failBinOp(l, op, r, pos)
+          }
+          case _ => failBinOp(l, op, r, pos)
+        }
+      case Expr.BinaryOp.OP_> =>
+        l match {
+          case ln: Val.Num => r match {
+            case rn: Val.Num => Val.bool(ln.rawDouble > rn.rawDouble)
+            case _           => failBinOp(l, op, r, pos)
+          }
+          case ls: Val.Str => r match {
+            case rs: Val.Str => Val.bool(Util.compareStringsByCodepoint(ls.str, rs.str) > 0)
+            case _           => failBinOp(l, op, r, pos)
+          }
+          case la: Val.Arr => r match {
+            case ra: Val.Arr => Val.bool(compare(la, ra) > 0)
+            case _           => failBinOp(l, op, r, pos)
+          }
+          case _ => failBinOp(l, op, r, pos)
+        }
+      case Expr.BinaryOp.OP_<= =>
+        l match {
+          case ln: Val.Num => r match {
+            case rn: Val.Num => Val.bool(ln.rawDouble <= rn.rawDouble)
+            case _           => failBinOp(l, op, r, pos)
+          }
+          case ls: Val.Str => r match {
+            case rs: Val.Str => Val.bool(Util.compareStringsByCodepoint(ls.str, rs.str) <= 0)
+            case _           => failBinOp(l, op, r, pos)
+          }
+          case la: Val.Arr => r match {
+            case ra: Val.Arr => Val.bool(compare(la, ra) <= 0)
+            case _           => failBinOp(l, op, r, pos)
+          }
+          case _ => failBinOp(l, op, r, pos)
+        }
+      case Expr.BinaryOp.OP_>= =>
+        l match {
+          case ln: Val.Num => r match {
+            case rn: Val.Num => Val.bool(ln.rawDouble >= rn.rawDouble)
+            case _           => failBinOp(l, op, r, pos)
+          }
+          case ls: Val.Str => r match {
+            case rs: Val.Str => Val.bool(Util.compareStringsByCodepoint(ls.str, rs.str) >= 0)
+            case _           => failBinOp(l, op, r, pos)
+          }
+          case la: Val.Arr => r match {
+            case ra: Val.Arr => Val.bool(compare(la, ra) >= 0)
+            case _           => failBinOp(l, op, r, pos)
+          }
+          case _ => failBinOp(l, op, r, pos)
+        }
+      case Expr.BinaryOp.OP_== =>
+        if (l.isInstanceOf[Val.Func] && r.isInstanceOf[Val.Func])
+          Error.fail("cannot test equality of functions", pos)
+        Val.bool(equal(l, r))
+      case Expr.BinaryOp.OP_!= =>
+        if (l.isInstanceOf[Val.Func] && r.isInstanceOf[Val.Func])
+          Error.fail("cannot test equality of functions", pos)
+        Val.bool(!equal(l, r))
+      case Expr.BinaryOp.OP_in =>
+        l match {
+          case ls: Val.Str => r match {
+            case o: Val.Obj => Val.bool(o.containsKey(ls.str))
+            case _          => failBinOp(l, op, r, pos)
+          }
+          case _ => failBinOp(l, op, r, pos)
+        }
+      case _ => failBinOp(l, op, r, pos)
+    }
   }
 
   def visitArr(e: Arr)(implicit scope: ValScope): Val = {
@@ -1373,6 +1515,62 @@ class Evaluator(
         }
       }
       newScope
+    }
+
+    // Single-field fast path: avoid LinkedHashMap allocation for 1-field objects
+    if (fields.length == 1) {
+      val field = fields(0)
+      field match {
+        case Member.Field(offset, fieldName, plus, null, sep, rhs) =>
+          val k = visitFieldName(fieldName, offset)
+          if (k != null) {
+            val fieldKey = k
+            val member = new Val.Obj.Member(plus, sep) {
+              def invoke(self: Val.Obj, sup: Val.Obj, fs: FileScope, ev: EvalScope): Val = {
+                checkStackDepth(rhs.pos, fieldKey)
+                try visitExpr(rhs)(makeNewScope(self, sup))
+                finally decrementStackDepth()
+              }
+            }
+            val valueCache = if (sup == null) {
+              Val.Obj.getEmptyValueCacheForObjWithoutSuper(1)
+            } else {
+              Util.preSizedJavaHashMap[Any, Val](4)
+            }
+            cachedObj = new Val.Obj(
+              objPos, null, false,
+              if (asserts != null) triggerAsserts else null,
+              sup, valueCache, null, null, null, null,
+              k, member
+            )
+            return cachedObj
+          }
+        case Member.Field(offset, fieldName, false, argSpec, sep, rhs) =>
+          val k = visitFieldName(fieldName, offset)
+          if (k != null) {
+            val fieldKey = k
+            val member = new Val.Obj.Member(false, sep) {
+              def invoke(self: Val.Obj, sup: Val.Obj, fs: FileScope, ev: EvalScope): Val = {
+                checkStackDepth(rhs.pos, fieldKey)
+                try visitMethod(rhs, argSpec, offset)(makeNewScope(self, sup))
+                finally decrementStackDepth()
+              }
+            }
+            val valueCache = if (sup == null) {
+              Val.Obj.getEmptyValueCacheForObjWithoutSuper(1)
+            } else {
+              Util.preSizedJavaHashMap[Any, Val](4)
+            }
+            cachedObj = new Val.Obj(
+              objPos, null, false,
+              if (asserts != null) triggerAsserts else null,
+              sup, valueCache, null, null, null, null,
+              k, member
+            )
+            return cachedObj
+          }
+        case _ => // fall through to general path
+      }
     }
 
     val builder = Util.preSizedJavaLinkedHashMap[String, Val.Obj.Member](fields.length)
