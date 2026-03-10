@@ -86,7 +86,7 @@ class StaticOptimizer(
         { () =>
           (
             transform(objComp.key),
-            nestedBindings(dynamicExpr, dynamicExpr, objComp.preLocals ++ objComp.postLocals) {
+            nestedBindings(dynamicExpr, dynamicExpr, objComp.allLocals) {
               (
                 transformBinds(objComp.preLocals),
                 transformBinds(objComp.postLocals),
