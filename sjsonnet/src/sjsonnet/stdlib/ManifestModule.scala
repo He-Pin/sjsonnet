@@ -283,41 +283,49 @@ object ManifestModule extends AbstractFunctionModule {
     },
     builtin("manifestIni", "ini") { (pos, ev, v: Val) =>
       val materialized = Materializer(v)(ev)
-      def render(x: ujson.Value) = x match {
-        case ujson.Str(vv)  => vv
-        case ujson.Num(vv)  => RenderUtils.renderDouble(vv)
-        case ujson.Bool(vv) => vv.toString
-        case ujson.Null     => "null"
-        case _              => x.transform(new sjsonnet.Renderer())
+      def render(sb: java.lang.StringBuilder, x: ujson.Value): Unit = x match {
+        case ujson.Str(vv)  => sb.append(vv)
+        case ujson.Num(vv)  => sb.append(RenderUtils.renderDouble(vv))
+        case ujson.Bool(vv) => sb.append(vv)
+        case ujson.Null     => sb.append("null")
+        case _              => sb.append(x.transform(new sjsonnet.Renderer()))
       }
-      def sect(x: ujson.Obj) = {
+      val sb = new java.lang.StringBuilder()
+      def sect(x: ujson.Obj): Unit = {
         // TODO remove the `toSeq` once this is fixed in scala3
-        x.value.toSeq.flatMap {
-          case (k, ujson.Arr(vs)) => vs.map(x => k + " = " + render(x))
-          case (k, v)             => Seq(k + " = " + render(v))
+        x.value.toSeq.foreach {
+          case (k, ujson.Arr(vs)) =>
+            vs.foreach { x =>
+              sb.append(k).append(" = ")
+              render(sb, x)
+              sb.append('\n')
+            }
+          case (k, v) =>
+            sb.append(k).append(" = ")
+            render(sb, v)
+            sb.append('\n')
         }
       }
-      val lines = materialized.obj
-        .get("main")
-        .fold(Iterable[String]())(x => sect(x.asInstanceOf[ujson.Obj])) ++
-        materialized.obj
-          .get("sections")
-          .fold(Iterable[String]())(x =>
-            // TODO remove the `toSeq` once this is fixed in scala3
-            x.obj.toSeq.flatMap { case (k, v) =>
-              Seq("[" + k + "]") ++ sect(v.asInstanceOf[ujson.Obj])
-            }
-          )
-      lines.flatMap(Seq(_, "\n")).mkString
+      materialized.obj.get("main").foreach(x => sect(x.asInstanceOf[ujson.Obj]))
+      materialized.obj.get("sections").foreach { x =>
+        // TODO remove the `toSeq` once this is fixed in scala3
+        x.obj.toSeq.foreach { case (k, v) =>
+          sb.append('[').append(k).append("]\n")
+          sect(v.asInstanceOf[ujson.Obj])
+        }
+      }
+      sb.toString
     },
     builtin("manifestPython", "v") { (pos, ev, v: Val) =>
       Materializer.apply0(v, new PythonRenderer())(ev).toString
     },
     builtin("manifestPythonVars", "conf") { (pos, ev, v: Val.Obj) =>
+      val sb = new java.lang.StringBuilder()
       // TODO remove the `toSeq` once this is fixed in scala3
-      Materializer(v)(ev).obj.toSeq.map { case (k, v) =>
-        k + " = " + v.transform(new PythonRenderer()).toString + "\n"
-      }.mkString
+      Materializer(v)(ev).obj.toSeq.foreach { case (k, v) =>
+        sb.append(k).append(" = ").append(v.transform(new PythonRenderer()).toString).append('\n')
+      }
+      sb.toString
     },
     builtin("manifestXmlJsonml", "value") { (pos, ev, value: Val) =>
       import scalatags.Text.all.{value => _, _}
