@@ -930,7 +930,11 @@ object Val {
       }
       if (simple) {
         if (tailstrictMode == TailstrictModeEnabled) {
-          argsL.foreach(_.value)
+          var i = 0
+          while (i < argsL.length) {
+            argsL(i).value
+            i += 1
+          }
         }
         val newScope = defSiteValScope.extendSimple(argsL)
         val result = evalRhs(newScope, ev, funDefFileScope, outerPos)
@@ -995,7 +999,11 @@ object Val {
           }
         }
         if (tailstrictMode == TailstrictModeEnabled) {
-          argVals.foreach(_.value)
+          var i = 0
+          while (i < argVals.length) {
+            argVals(i).value
+            i += 1
+          }
         }
         val result = evalRhs(newScope, ev, funDefFileScope, outerPos)
         if (tailstrictMode == TailstrictModeDisabled) TailCall.resolve(result) else result

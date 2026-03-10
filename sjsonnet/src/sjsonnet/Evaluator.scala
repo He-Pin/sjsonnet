@@ -298,8 +298,17 @@ class Evaluator(
       e.isInstanceOf[Val.Literal]
   }
 
-  def visitArr(e: Arr)(implicit scope: ValScope): Val =
-    Val.Arr(e.pos, e.value.map(visitAsLazy))
+  def visitArr(e: Arr)(implicit scope: ValScope): Val = {
+    val src = e.value
+    val len = src.length
+    val res = new Array[Eval](len)
+    var i = 0
+    while (i < len) {
+      res(i) = visitAsLazy(src(i))
+      i += 1
+    }
+    Val.Arr(e.pos, res)
+  }
 
   def visitSelectSuper(e: SelectSuper)(implicit scope: ValScope): Val = {
     val sup = scope.bindings(e.selfIdx + 1).asInstanceOf[Val.Obj]
@@ -880,14 +889,18 @@ class Evaluator(
   }
 
   def visitImportBin(e: ImportBin): Val.Arr = {
-    Val.Arr(
-      e.pos,
-      importer
-        .resolveAndReadOrFail(e.value, e.pos, binaryData = true)
-        ._2
-        .readRawBytes()
-        .map(x => Val.Num(e.pos, (x & 0xff).doubleValue))
-    )
+    val bytes = importer
+      .resolveAndReadOrFail(e.value, e.pos, binaryData = true)
+      ._2
+      .readRawBytes()
+    val len = bytes.length
+    val res = new Array[Eval](len)
+    var i = 0
+    while (i < len) {
+      res(i) = Val.Num(e.pos, (bytes(i) & 0xff).doubleValue)
+      i += 1
+    }
+    Val.Arr(e.pos, res)
   }
 
   def visitImport(e: Import): Val = {
@@ -1229,9 +1242,16 @@ class Evaluator(
       try {
         val func = visitExpr(e.value).cast[Val.Func]
         val mode = if (e.tailstrict) TailstrictModeEnabled else TailstrictModeDisabled
-        val args =
-          if (e.tailstrict) e.args.map(visitExpr(_)).asInstanceOf[Array[Eval]]
-          else e.args.map(visitAsLazy(_))
+        val eArgs = e.args
+        val numArgs = eArgs.length
+        val args = new Array[Eval](numArgs)
+        if (e.tailstrict) {
+          var i = 0
+          while (i < numArgs) { args(i) = visitExpr(eArgs(i)); i += 1 }
+        } else {
+          var i = 0
+          while (i < numArgs) { args(i) = visitAsLazy(eArgs(i)); i += 1 }
+        }
         new TailCall(func, args, e.namedNames, e, mode)
       } catch Error.withStackFrame(e)
     case e: Apply0 if e.tailstrict || e.tailrec =>
@@ -1414,7 +1434,9 @@ class Evaluator(
     val builder = new java.util.LinkedHashMap[String, Val.Obj.Member]
     val compScopes = visitComp(e.first :: e.rest, Array(compScope))
     if (debugStats != null) debugStats.objectCompIterations += compScopes.length
-    for (s <- compScopes) {
+    var ci = 0
+    while (ci < compScopes.length) {
+      val s = compScopes(ci)
       visitExpr(e.key)(s) match {
         case Val.Str(_, k) =>
           val previousValue = builder.put(
@@ -1436,6 +1458,7 @@ class Evaluator(
         case Val.Null(_) => // do nothing
         case x           => fieldNameTypeError(x, e.pos)
       }
+      ci += 1
     }
     val valueCache = if (sup == null) {
       Val.Obj.getEmptyValueCacheForObjWithoutSuper(builder.size())
@@ -1472,18 +1495,23 @@ class Evaluator(
       }
       visitComp(rest, newScopes.result())
     case (spec @ IfSpec(offset, expr)) :: rest =>
-      visitComp(
-        rest,
-        scopes.filter(visitExpr(expr)(_) match {
-          case Val.True(_)  => true
-          case Val.False(_) => false
+      val filtered = collection.mutable.ArrayBuilder.make[ValScope]
+      filtered.sizeHint(scopes.length)
+      var i = 0
+      while (i < scopes.length) {
+        val s = scopes(i)
+        visitExpr(expr)(s) match {
+          case Val.True(_)  => filtered += s
+          case Val.False(_) => // skip
           case other        =>
             Error.fail(
               "Condition must be boolean, got " + other.prettyName,
               spec
             )
-        })
-      )
+        }
+        i += 1
+      }
+      visitComp(rest, filtered.result())
     case Nil => scopes
   }
 
