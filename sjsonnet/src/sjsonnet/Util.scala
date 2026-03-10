@@ -142,16 +142,14 @@ object Util {
     while (i1 < n1 && i2 < n2) {
       val c1 = s1.charAt(i1)
       val c2 = s2.charAt(i2)
-      val c1Sur = Character.isSurrogate(c1)
-      val c2Sur = Character.isSurrogate(c2)
-
-      if (!c1Sur && !c2Sur) {
-        // Both are non-surrogates, compare directly
-        if (c1 != c2) return Character.compare(c1, c2)
+      if (c1 == c2) {
         i1 += 1
         i2 += 1
+      } else if (c1 < 0xD800 && c2 < 0xD800) {
+        // Both below surrogate range: char value == codepoint value
+        return c1 - c2
       } else {
-        // At least one is a surrogate, use full codepoint logic
+        // At least one may be a surrogate, use full codepoint logic
         val cp1 = s1.codePointAt(i1)
         val cp2 = s2.codePointAt(i2)
         if (cp1 != cp2) return Integer.compare(cp1, cp2)

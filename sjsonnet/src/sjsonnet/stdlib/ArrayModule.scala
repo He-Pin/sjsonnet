@@ -84,7 +84,13 @@ object ArrayModule extends AbstractFunctionModule {
 
   private object All extends Val.Builtin1("all", "arr") {
     def evalRhs(arr: Eval, ev: EvalScope, pos: Position): Val = {
-      Val.bool(arr.value.asArr.forall(v => v.asBoolean))
+      val a = arr.value.asArr
+      var i = 0
+      while (i < a.length) {
+        if (!a.value(i).asBoolean) return Val.staticFalse
+        i += 1
+      }
+      Val.staticTrue
     }
   }
 
@@ -315,7 +321,14 @@ object ArrayModule extends AbstractFunctionModule {
             }
             str.str.contains(secondArg)
           case a: Val.Arr =>
-            a.asLazyArray.indexWhere(v => ev.equal(v.value, x.value)) >= 0
+            val la = a.asLazyArray
+            var i = 0
+            var found = false
+            while (i < la.length && !found) {
+              if (ev.equal(la(i).value, x.value)) found = true
+              i += 1
+            }
+            found
           case arr =>
             Error.fail(
               "std.member first argument must be an array or a string, got " + arr.prettyName
@@ -618,14 +631,14 @@ object ArrayModule extends AbstractFunctionModule {
           Val.Str(pos, builder.toString())
         case a: Val.Arr =>
           val lazyArray = a.asLazyArray
-          val out = new mutable.ArrayBuilder.ofRef[Eval]
-          out.sizeHint(lazyArray.length * count)
+          val elemLen = lazyArray.length
+          val result = new Array[Eval](elemLen * count)
           var i = 0
           while (i < count) {
-            out ++= lazyArray
+            System.arraycopy(lazyArray, 0, result, i * elemLen, elemLen)
             i += 1
           }
-          Val.Arr(pos, out.result())
+          Val.Arr(pos, result)
         case x => Error.fail("std.repeat first argument must be an array or a string")
       }
       res
@@ -646,17 +659,29 @@ object ArrayModule extends AbstractFunctionModule {
       )
     },
     builtin("contains", "arr", "elem") { (_, ev, arr: Val.Arr, elem: Val) =>
-      arr.asLazyArray.indexWhere(s => ev.equal(s.value, elem)) != -1
+      val la = arr.asLazyArray
+      var i = 0
+      var found = false
+      while (i < la.length && !found) {
+        if (ev.equal(la(i).value, elem)) found = true
+        i += 1
+      }
+      found
     },
     builtin("remove", "arr", "elem") { (_, ev, arr: Val.Arr, elem: Val) =>
-      val idx = arr.asLazyArray.indexWhere(s => ev.equal(s.value, elem))
+      val la = arr.asLazyArray
+      var idx = -1
+      var i = 0
+      while (i < la.length && idx == -1) {
+        if (ev.equal(la(i).value, elem)) idx = i
+        i += 1
+      }
       if (idx == -1) {
         arr
       } else {
-        val src = arr.asLazyArray
-        val result = new Array[Eval](src.length - 1)
-        System.arraycopy(src, 0, result, 0, idx)
-        System.arraycopy(src, idx + 1, result, idx, src.length - idx - 1)
+        val result = new Array[Eval](la.length - 1)
+        System.arraycopy(la, 0, result, 0, idx)
+        System.arraycopy(la, idx + 1, result, idx, la.length - idx - 1)
         Val.Arr(arr.pos, result)
       }
     },
