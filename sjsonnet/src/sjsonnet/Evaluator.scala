@@ -964,11 +964,12 @@ class Evaluator(
         l match {
           case ln: Val.Num => r match {
             case rn: Val.Num => Val.Num(pos, ln.rawDouble + rn.rawDouble)
-            case rs: Val.Str => Val.Str(pos, Materializer.stringify(l) + rs.str)
+            case rs: Val.Str => Val.Str(pos, RenderUtils.renderDouble(ln.rawDouble) + rs.str)
             case _           => failBinOp(l, e.op, r, pos)
           }
           case ls: Val.Str => r match {
             case rs: Val.Str => Val.Str(pos, ls.str + rs.str)
+            case rn: Val.Num => Val.Str(pos, ls.str + RenderUtils.renderDouble(rn.rawDouble))
             case _           => Val.Str(pos, ls.str + Materializer.stringify(r))
           }
           case lo: Val.Obj => r match {
