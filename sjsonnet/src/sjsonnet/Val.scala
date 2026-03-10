@@ -132,6 +132,31 @@ final class LazyApply2(
 }
 
 /**
+ * Closure-free [[Lazy]] that defers `func.evalDefault(expr, scope, ev)`.
+ *
+ * Used in [[Val.Func.apply]] for default parameter evaluation, eliminating the
+ * 2-object allocation (LazyFunc + Function0 closure) of the original pattern.
+ */
+final class LazyDefault(
+    private var exprOrVal: AnyRef, // Expr before compute, Val after
+    private var scope: ValScope,
+    private var func: Val.Func,
+    private var ev: EvalScope)
+    extends Lazy {
+  def value: Val = {
+    if (ev == null) exprOrVal.asInstanceOf[Val]
+    else {
+      val r = func.evalDefault(exprOrVal.asInstanceOf[Expr], scope, ev)
+      exprOrVal = r
+      scope = null.asInstanceOf[ValScope]
+      func = null
+      ev = null
+      r
+    }
+  }
+}
+
+/**
  * [[Val]]s represented Jsonnet values that are the result of evaluating a Jsonnet program. The
  * [[Val]] data structure is essentially a JSON tree, except evaluation of object attributes and
  * array contents are lazy, and the tree can contain functions.
@@ -387,7 +412,7 @@ object Val {
       private val static: Boolean,
       private val triggerAsserts: (Val.Obj, Val.Obj) => Unit,
       `super`: Obj,
-      valueCache: util.HashMap[Any, Val] = new util.HashMap[Any, Val](),
+      private var valueCache: util.HashMap[Any, Val] = new util.HashMap[Any, Val](),
       private var allKeys: util.LinkedHashMap[String, java.lang.Boolean] = null,
       private val excludedKeys: java.util.Set[String] = null,
       private val staticLayout: StaticObjectLayout = null,
@@ -453,7 +478,7 @@ object Val {
         } else null
         return new Val.Obj(
           this.pos, this.getValue0, false, this.triggerAsserts, lhs,
-          new util.HashMap[Any, Val](), null, filteredExcluded
+          null, null, filteredExcluded
         )
       }
       // Single traversal: collect chain in this-first order
@@ -486,7 +511,7 @@ object Val {
           false,
           s.triggerAsserts,
           current,
-          new util.HashMap[Any, Val](),
+          null,
           null,
           filteredExcludedKeys
         )
@@ -687,10 +712,11 @@ object Val {
           Error.fail("Field does not exist: " + k, pos)
         }
         val cacheKey = if (self eq this) k else (k, self)
-        val cachedValue = valueCache.get(cacheKey)
+        val cachedValue = if (valueCache != null) valueCache.get(cacheKey) else null
         if (cachedValue != null) {
           cachedValue
         } else {
+          if (valueCache == null) valueCache = new util.HashMap[Any, Val]()
           valueRaw(k, self, pos, valueCache, cacheKey) match {
             case null => Error.fail("Field does not exist: " + k, pos)
             case x    => x
@@ -951,7 +977,7 @@ object Val {
             if (argVals(j) == null) {
               val default = params.defaultExprs(i)
               if (default != null) {
-                argVals(j) = new LazyFunc(() => evalDefault(default, newScope, ev))
+                argVals(j) = new LazyDefault(default, newScope, this, ev)
               } else {
                 if (missing == null) missing = new ArrayBuffer
                 missing.+=(params.names(i))
