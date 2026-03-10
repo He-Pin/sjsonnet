@@ -173,20 +173,18 @@ object ManifestModule extends AbstractFunctionModule {
         case _: Val.Str | _: Val.Null => // donothing
         case x                        => Error.fail("Cannot call .lines on " + x.value.prettyName)
       }
-      Val.Str(
-        pos,
-        Materializer
-          .apply(v1.value)(ev)
-          .asInstanceOf[ujson.Arr]
-          .value
-          .filter(_ != ujson.Null)
-          .map {
-            case ujson.Str(s) => s + "\n"
-            case _            =>
-              throw new RuntimeException("Unexpected") /* we ensure it's all strings above */
-          }
-          .mkString
-      )
+      val arr = Materializer.apply(v1.value)(ev).asInstanceOf[ujson.Arr].value
+      val sb = new java.lang.StringBuilder()
+      var i = 0
+      while (i < arr.length) {
+        arr(i) match {
+          case ujson.Null   => // skip
+          case ujson.Str(s) => sb.append(s).append('\n')
+          case _            => throw new RuntimeException("Unexpected")
+        }
+        i += 1
+      }
+      Val.Str(pos, sb.toString)
     }
   }
 
