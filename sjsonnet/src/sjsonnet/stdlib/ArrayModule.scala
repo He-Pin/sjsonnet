@@ -104,7 +104,12 @@ object ArrayModule extends AbstractFunctionModule {
   private object Count extends Val.Builtin2("count", "arr", "x") {
     def evalRhs(arr: Eval, x: Eval, ev: EvalScope, pos: Position): Val = {
       var count = 0
-      arr.value.asArr.foreach(v => if (ev.equal(v.value, x.value)) count += 1)
+      val a = arr.value.asArr.asLazyArray
+      var i = 0
+      while (i < a.length) {
+        if (ev.equal(a(i).value, x.value)) count += 1
+        i += 1
+      }
       Val.Num(pos, count)
     }
   }
