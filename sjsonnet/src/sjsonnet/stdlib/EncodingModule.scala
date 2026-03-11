@@ -54,7 +54,7 @@ object EncodingModule extends AbstractFunctionModule {
         val result = new Array[Eval](decoded.length)
         var i = 0
         while (i < decoded.length) {
-          result(i) = Val.Num(pos, decoded(i) & 0xff)
+          result(i) = Val.cachedNum(pos, decoded(i) & 0xff)
           i += 1
         }
         Val.Arr(pos, result)

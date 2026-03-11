@@ -438,11 +438,11 @@ class Evaluator(
       case Expr.BinaryOp.OP_>= => Val.bool(ln.rawDouble >= rn.rawDouble)
       case Expr.BinaryOp.OP_== => Val.bool(ln.rawDouble == rn.rawDouble)
       case Expr.BinaryOp.OP_!= => Val.bool(ln.rawDouble != rn.rawDouble)
-      case Expr.BinaryOp.OP_+  => Val.Num(pos, ln.rawDouble + rn.rawDouble)
-      case Expr.BinaryOp.OP_-  => Val.Num(pos, ln.rawDouble - rn.rawDouble)
-      case Expr.BinaryOp.OP_*  => Val.Num(pos, ln.rawDouble * rn.rawDouble)
-      case Expr.BinaryOp.OP_/  => Val.Num(pos, ln.rawDouble / rn.rawDouble)
-      case Expr.BinaryOp.OP_%  => Val.Num(pos, ln.rawDouble % rn.rawDouble)
+      case Expr.BinaryOp.OP_+  => Val.cachedNum(pos, ln.rawDouble + rn.rawDouble)
+      case Expr.BinaryOp.OP_-  => Val.cachedNum(pos, ln.rawDouble - rn.rawDouble)
+      case Expr.BinaryOp.OP_*  => Val.cachedNum(pos, ln.rawDouble * rn.rawDouble)
+      case Expr.BinaryOp.OP_/  => Val.cachedNum(pos, ln.rawDouble / rn.rawDouble)
+      case Expr.BinaryOp.OP_%  => Val.cachedNum(pos, ln.rawDouble % rn.rawDouble)
       case _                   => visitBinaryOpValues(op, ln, rn, pos)
     }
   }
@@ -590,9 +590,9 @@ class Evaluator(
   def visitUnaryOp(e: UnaryOp)(implicit scope: ValScope): Val = {
     val pos = e.pos
     (e.op: @switch) match {
-      case Expr.UnaryOp.OP_+ => Val.Num(pos, visitUnaryOpAsDouble(e))
-      case Expr.UnaryOp.OP_- => Val.Num(pos, visitUnaryOpAsDouble(e))
-      case Expr.UnaryOp.OP_~ => Val.Num(pos, visitUnaryOpAsDouble(e))
+      case Expr.UnaryOp.OP_+ => Val.cachedNum(pos, visitUnaryOpAsDouble(e))
+      case Expr.UnaryOp.OP_- => Val.cachedNum(pos, visitUnaryOpAsDouble(e))
+      case Expr.UnaryOp.OP_~ => Val.cachedNum(pos, visitUnaryOpAsDouble(e))
       case Expr.UnaryOp.OP_! =>
         visitExpr(e.value) match {
           case Val.True(_)  => Val.False(pos)
@@ -1206,18 +1206,18 @@ class Evaluator(
     (e.op: @switch) match {
       // Pure numeric fast path: avoid intermediate Val.Num allocation
       case Expr.BinaryOp.OP_* =>
-        Val.Num(pos, visitBinaryOpAsDouble(e))
+        Val.cachedNum(pos, visitBinaryOpAsDouble(e))
       case Expr.BinaryOp.OP_- =>
-        Val.Num(pos, visitBinaryOpAsDouble(e))
+        Val.cachedNum(pos, visitBinaryOpAsDouble(e))
       case Expr.BinaryOp.OP_/ =>
-        Val.Num(pos, visitBinaryOpAsDouble(e))
+        Val.cachedNum(pos, visitBinaryOpAsDouble(e))
       // Polymorphic ops: nested match avoids Tuple2 allocation; Num checked first (most common)
       case Expr.BinaryOp.OP_% =>
         val l = visitExpr(e.lhs)
         val r = visitExpr(e.rhs)
         l match {
           case ln: Val.Num => r match {
-            case rn: Val.Num => Val.Num(pos, ln.rawDouble % rn.rawDouble)
+            case rn: Val.Num => Val.cachedNum(pos, ln.rawDouble % rn.rawDouble)
             case _           => failBinOp(l, e.op, r, pos)
           }
           case ls: Val.Str => Val.Str(pos, Format.format(ls.str, r, pos))
@@ -1229,7 +1229,7 @@ class Evaluator(
         val r = visitExpr(e.rhs)
         l match {
           case ln: Val.Num => r match {
-            case rn: Val.Num => Val.Num(pos, ln.rawDouble + rn.rawDouble)
+            case rn: Val.Num => Val.cachedNum(pos, ln.rawDouble + rn.rawDouble)
             case rs: Val.Str => Val.Str(pos, RenderUtils.renderDouble(ln.rawDouble) + rs.str)
             case _           => failBinOp(l, e.op, r, pos)
           }
@@ -1256,10 +1256,10 @@ class Evaluator(
 
       // Shift ops: pure numeric with safe-integer range check
       case Expr.BinaryOp.OP_<< =>
-        Val.Num(pos, visitBinaryOpAsDouble(e))
+        Val.cachedNum(pos, visitBinaryOpAsDouble(e))
 
       case Expr.BinaryOp.OP_>> =>
-        Val.Num(pos, visitBinaryOpAsDouble(e))
+        Val.cachedNum(pos, visitBinaryOpAsDouble(e))
 
       // Comparison ops: nested match avoids Tuple2 allocation; Num checked first (most common)
       case Expr.BinaryOp.OP_< =>
@@ -1366,13 +1366,13 @@ class Evaluator(
 
       // Bitwise ops: pure numeric with safe-integer range check
       case Expr.BinaryOp.OP_& =>
-        Val.Num(pos, visitBinaryOpAsDouble(e))
+        Val.cachedNum(pos, visitBinaryOpAsDouble(e))
 
       case Expr.BinaryOp.OP_^ =>
-        Val.Num(pos, visitBinaryOpAsDouble(e))
+        Val.cachedNum(pos, visitBinaryOpAsDouble(e))
 
       case Expr.BinaryOp.OP_| =>
-        Val.Num(pos, visitBinaryOpAsDouble(e))
+        Val.cachedNum(pos, visitBinaryOpAsDouble(e))
 
       case _ =>
         val l = visitExpr(e.lhs)
