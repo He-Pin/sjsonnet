@@ -1814,30 +1814,33 @@ class Evaluator(
     }
     case xa: Val.Arr => y match {
       case ya: Val.Arr =>
-        // Use rawArray to avoid materializing lazy range elements
-        val xArr = xa.rawArray
-        val yArr = ya.rawArray
-        val len = math.min(xa.length, ya.length)
-        // Phase 1: skip shared Eval references (including nulls from lazy ranges)
+        val xArr = xa.asLazyArray
+        val yArr = ya.asLazyArray
+        val len = math.min(xArr.length, yArr.length)
+        // Phase 1: skip shared Eval references (e.g. from array concat)
         var i = 0
         while (i < len && (xArr(i) eq yArr(i))) { i += 1 }
         // Phase 2: compare from first mismatch onwards
         while (i < len) {
-          val xi = xa.value(i)
-          val yi = ya.value(i)
-          if (!(xi eq yi)) {
-            val cmp = xi match {
-              case xn: Val.Num => yi match {
-                case yn: Val.Num => java.lang.Double.compare(xn.rawDouble, yn.rawDouble)
-                case _           => compare(xi, yi)
+          val xe = xArr(i)
+          val ye = yArr(i)
+          if (!(xe eq ye)) {
+            val xi = xe.value
+            val yi = ye.value
+            if (!(xi eq yi)) {
+              val cmp = xi match {
+                case xn: Val.Num => yi match {
+                  case yn: Val.Num => java.lang.Double.compare(xn.rawDouble, yn.rawDouble)
+                  case _           => compare(xi, yi)
+                }
+                case _ => compare(xi, yi)
               }
-              case _ => compare(xi, yi)
+              if (cmp != 0) return cmp
             }
-            if (cmp != 0) return cmp
           }
           i += 1
         }
-        Integer.compare(xa.length, ya.length)
+        Integer.compare(xArr.length, yArr.length)
       case _ => Error.fail("Cannot compare " + x.prettyName + " with " + y.prettyName, x.pos)
     }
     case _ => Error.fail("Cannot compare " + x.prettyName + " with " + y.prettyName, x.pos)
@@ -1862,15 +1865,20 @@ class Evaluator(
         case y: Val.Arr =>
           val xlen = x.length
           if (xlen != y.length) return false
-          // Use rawArray to skip shared Eval refs (including nulls from lazy ranges)
-          val xArr = x.rawArray
-          val yArr = y.rawArray
+          val xArr = x.asLazyArray
+          val yArr = y.asLazyArray
           var i = 0
+          // Phase 1: skip shared Eval references
           while (i < xlen && (xArr(i) eq yArr(i))) { i += 1 }
+          // Phase 2: compare remaining elements
           while (i < xlen) {
-            val xv = x.value(i)
-            val yv = y.value(i)
-            if (!(xv eq yv) && !equal(xv, yv)) return false
+            val xe = xArr(i)
+            val ye = yArr(i)
+            if (!(xe eq ye)) {
+              val xv = xe.value
+              val yv = ye.value
+              if (!(xv eq yv) && !equal(xv, yv)) return false
+            }
             i += 1
           }
           true
