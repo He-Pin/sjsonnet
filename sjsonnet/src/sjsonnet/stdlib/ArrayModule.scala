@@ -296,8 +296,18 @@ object ArrayModule extends AbstractFunctionModule {
   }
 
   private object Reverse extends Val.Builtin1("reverse", "arrs") {
+    // 1-entry cache: when the same backing array is reversed repeatedly
+    // (e.g. `[std.reverse(std.range(0,n)) for i in std.range(0,m)]`),
+    // reuse the reversed array from the first call.
+    private var cachedSrc: Array[Eval] = null
+    private var cachedResult: Array[Eval] = null
+
     def evalRhs(arrs: Eval, ev: EvalScope, pos: Position): Val = {
       val src = arrs.value.asArr.asLazyArray
+      val cs = cachedSrc
+      if (cs != null && (src eq cs)) {
+        return Val.Arr(pos, cachedResult)
+      }
       val len = src.length
       val res = new Array[Eval](len)
       var i = 0
@@ -305,6 +315,8 @@ object ArrayModule extends AbstractFunctionModule {
         res(len - 1 - i) = src(i)
         i += 1
       }
+      cachedSrc = src
+      cachedResult = res
       Val.Arr(pos, res)
     }
   }
