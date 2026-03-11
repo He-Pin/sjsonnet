@@ -1763,6 +1763,8 @@ class Evaluator(
                     case v: Val => v
                     case _      => null
                   }
+                case _ if e.binds == null && canEagerEval(rhs, scope.length) =>
+                  try visitExpr(rhs) catch { case _: Throwable => null }
                 case _ => null
               }
               if (constVal ne null) {
@@ -1835,6 +1837,8 @@ class Evaluator(
                 case v: Val => v
                 case _      => null
               }
+            case _ if e.binds == null && canEagerEval(rhs, scope.length) =>
+              try visitExpr(rhs) catch { case _: Throwable => null }
             case _ => null
           }
           val v: Val.Obj.Member =
