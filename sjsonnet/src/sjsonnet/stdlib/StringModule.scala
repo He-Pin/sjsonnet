@@ -354,7 +354,7 @@ object StringModule extends AbstractFunctionModule {
       val arr = new Array[Eval](bytes.length)
       var i = 0
       while (i < bytes.length) {
-        arr(i) = Val.Num(pos, bytes(i) & 0xff)
+        arr(i) = Val.cachedNum(pos, bytes(i) & 0xff)
         i += 1
       }
       Val.Arr(pos, arr)

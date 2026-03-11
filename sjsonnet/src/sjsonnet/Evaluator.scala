@@ -1137,7 +1137,7 @@ class Evaluator(
     val res = new Array[Eval](len)
     var i = 0
     while (i < len) {
-      res(i) = Val.Num(e.pos, (bytes(i) & 0xff).doubleValue)
+      res(i) = Val.cachedNum(e.pos, (bytes(i) & 0xff).doubleValue)
       i += 1
     }
     Val.Arr(e.pos, res)

@@ -252,7 +252,7 @@ object ArrayModule extends AbstractFunctionModule {
         val bindings = newScope.bindings
         var i = 0
         while (i < len) {
-          bindings(scopeIdx) = Val.Num(pos, i)
+          bindings(scopeIdx) = Val.cachedNum(pos, i)
           bindings(scopeIdx + 1) = arr(i)
           a(i) = func.evalRhsResolved(newScope, ev, funDefFileScope, noOff)
           i += 1
@@ -261,7 +261,7 @@ object ArrayModule extends AbstractFunctionModule {
         var i = 0
         while (i < len) {
           val x = arr(i)
-          val idx = Val.Num(pos, i)
+          val idx = Val.cachedNum(pos, i)
           a(i) = new LazyApply2(func, idx, x, noOff, ev)
           i += 1
         }
@@ -756,7 +756,7 @@ object ArrayModule extends AbstractFunctionModule {
             val bindings = newScope.bindings
             var i = 0
             while (i < sz) {
-              bindings(scopeIdx) = Val.Num(pos, i)
+              bindings(scopeIdx) = Val.cachedNum(pos, i)
               a(i) = func.evalRhsResolved(newScope, ev, funDefFileScope, noOff)
               i += 1
             }
@@ -764,7 +764,7 @@ object ArrayModule extends AbstractFunctionModule {
             val noOff = pos.noOffset
             var i = 0
             while (i < sz) {
-              a(i) = new LazyApply1(func, Val.Num(pos, i), noOff, ev)
+              a(i) = new LazyApply1(func, Val.cachedNum(pos, i), noOff, ev)
               i += 1
             }
           }
