@@ -701,3 +701,29 @@
   - comparison2 A/B focused benchmark: `20.8ms → 18.5ms` (-11% time improvement)
   - realistic2 regression suite: `55.3ms` (no regression from ConstMember Wave 29)
   - comparison2 regression suite: `21.9ms`
+
+## Wave 31: invariant-body-hoisting
+- Scope: For comprehensions `[body for x in A]` where body doesn't reference x, evaluate body once and replicate the result across all iterations.
+- Outcome: **kept**.
+- Commit: `3797990f`
+- Validation:
+  - Tests: 167/167 passed (all suites)
+  - Full regression suite: 35/35 pass, no regressions
+  - Optimization fires correctly (confirmed via diagnostics) but has minimal measurable impact on current benchmarks because most invariant bodies are already pre-computed Val.Literal instances.
+- Key insight: Val.Arr, Val.Num, Val.Str all extend Val.Literal (extends Val with Expr). When a body evaluates to a Val.Literal, visitExpr returns it directly, making the optimization a no-op. The optimization will benefit future cases with genuinely unevaluated invariant bodies.
+
+## Wave 32: small-integer-num-cache
+- Scope: Add a 256-entry pool of pre-allocated Val.Num instances for integers 0–255. Applied to all evaluator arithmetic operations (+, -, *, /, %, unary, bitwise, shift) and base64DecodeBytes.
+- Outcome: **kept**.
+- Commit: `9b989b0a`
+- Validation:
+  - Tests: 23/23 test suites passed
+  - Full regression suite: 35/35 benchmarks pass, no regressions
+  - Key benchmark improvements:
+    - `bench.03` (fibonacci): `15.3 → 13.6 ms/op` (-11.1%), alloc `20.5MB → 11.7MB` (-42.6%)
+    - `realistic2`: `55 → 48.9 ms/op` (-11.1%)
+    - `comparison2`: `21.9 → 19.8 ms/op` (-9.6%)
+    - `base64DecodeBytes`: `9 → 7.7 ms/op` (-14.4%)
+    - `bench.02`: `~32 → 31.4 ms/op` (-2%)
+  - GC metrics for bench.03: count 381→234 (-38.6%), time 166ms→84ms (-49.4%)
+- Design: `Val.cachedNum(pos, d)` checks `d.toInt` in 0-255 and `i.toDouble == d` — branch-free for non-matching values. Safe because evaluator-created Val.Num pos is never mutated at runtime (only StaticOptimizer mutates pos, and it creates fresh instances).
