@@ -222,6 +222,14 @@ class Evaluator(
             }
           }
           rest match {
+            case Nil if lazyArr.length > 1 && isInvariantExpr(body, scope.bindings.length) =>
+              // Body doesn't reference the loop variable at all — evaluate once, replicate.
+              val result = visitExpr(body)(scope)
+              var j = 0
+              while (j < lazyArr.length) {
+                results += result
+                j += 1
+              }
             case Nil if lazyArr.length > 1 && isNonCapturingBody(body) =>
               // Scope reuse: allocate one scope, mutate the binding slot each iteration.
               // Safe because the body doesn't create lazy values that capture the scope array.
