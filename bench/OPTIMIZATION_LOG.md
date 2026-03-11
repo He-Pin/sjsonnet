@@ -684,3 +684,20 @@
     - `realistic2` alloc: `186MB → 173MB` (-7.0%)
     - `bench.02`: `32.4 ms/op` (no regression)
   - Applied to all three visitMemberList paths (single-field, inline 2-8, general 9+)
+
+## Wave 30: loop-invariant-hoisting
+- Scope: For nested comprehensions `[body for x in A for y in B]` where B doesn't depend on x and body is non-capturing, evaluate B once before the outer loop and use a single mutable scope with 2 extra slots.
+- Outcome: **kept**.
+- Commit: `abdceb02`
+- Key changes:
+  - `isInvariantExpr(e, maxIdx)`: checks if expression only references scope variables below maxIdx
+  - `visitCompTwoLevel()`: extracted helper method for the two-level invariant case
+  - Includes BinaryOp fast path for `ValidId op ValidId` bodies (inline scope lookups + Num-Num dispatch)
+- Critical fix: initial inline implementation (60+ lines in `visitCompInline`) caused JIT degradation on realistic2 (55ms → 94ms). Extracting into a separate method restored performance.
+- Lesson: method size matters — hot methods that grow too large degrade JIT compilation quality and inlining decisions.
+- Validation:
+  - Tests: 53/53 passed
+  - Full regression suite: 35/35 benchmarks pass, no regressions
+  - comparison2 A/B focused benchmark: `20.8ms → 18.5ms` (-11% time improvement)
+  - realistic2 regression suite: `55.3ms` (no regression from ConstMember Wave 29)
+  - comparison2 regression suite: `21.9ms`
