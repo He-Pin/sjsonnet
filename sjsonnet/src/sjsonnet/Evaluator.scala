@@ -1567,6 +1567,37 @@ class Evaluator(
     }
   }
 
+  /** Checks whether a field-body expression only references bindings in the
+    * enclosing scope (indices < scopeLen) and is cheap enough to evaluate
+    * eagerly. If true, the field body doesn't depend on the new object's
+    * self/super, so it can be evaluated at object creation time and stored
+    * as a ConstMember, avoiding a deferred Member closure + scope copy. */
+  private def canEagerEval(e: Expr, scopeLen: Int): Boolean =
+    (e.tag: @scala.annotation.switch) match {
+      case ExprTags.ValidId =>
+        e.asInstanceOf[ValidId].nameIdx < scopeLen
+      case ExprTags.BinaryOp =>
+        val b = e.asInstanceOf[Expr.BinaryOp]
+        canEagerEval(b.lhs, scopeLen) && canEagerEval(b.rhs, scopeLen)
+      case ExprTags.UnaryOp =>
+        canEagerEval(e.asInstanceOf[Expr.UnaryOp].value, scopeLen)
+      case ExprTags.Select =>
+        canEagerEval(e.asInstanceOf[Expr.Select].value, scopeLen)
+      case ExprTags.And =>
+        val a = e.asInstanceOf[Expr.And]
+        canEagerEval(a.lhs, scopeLen) && canEagerEval(a.rhs, scopeLen)
+      case ExprTags.Or =>
+        val o = e.asInstanceOf[Expr.Or]
+        canEagerEval(o.lhs, scopeLen) && canEagerEval(o.rhs, scopeLen)
+      case ExprTags.IfElse =>
+        val ie = e.asInstanceOf[Expr.IfElse]
+        canEagerEval(ie.cond, scopeLen) &&
+        canEagerEval(ie.`then`, scopeLen) &&
+        (ie.`else` == null || canEagerEval(ie.`else`, scopeLen))
+      case _ =>
+        e.isInstanceOf[Val.Literal]
+    }
+
   def visitMemberList(objPos: Position, e: ObjBody.MemberList, sup: Val.Obj)(implicit
       scope: ValScope): Val.Obj = {
     val asserts = e.asserts
@@ -1620,6 +1651,11 @@ class Evaluator(
                   case v: Val => v
                   case _      => null
                 }
+              case _ if e.binds == null && canEagerEval(rhs, scope.length) =>
+                // Field body doesn't reference new object's self/super and has
+                // no local binds. Safe to evaluate eagerly, avoiding deferred
+                // Member closure allocation + scope copy at access time.
+                try visitExpr(rhs) catch { case _: Throwable => null }
               case _ => null
             }
             val member: Val.Obj.Member =
