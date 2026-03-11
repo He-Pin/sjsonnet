@@ -236,14 +236,35 @@ object ArrayModule extends AbstractFunctionModule {
     def evalRhs(_func: Eval, _arr: Eval, ev: EvalScope, pos: Position): Val = {
       val func = _func.value.asFunc
       val arr = _arr.value.asArr.asLazyArray
-      val a = new Array[Eval](arr.length)
+      val len = arr.length
+      val a = new Array[Eval](len)
       val noOff = pos.noOffset
-      var i = 0
-      while (i < a.length) {
-        val x = arr(i)
-        val idx = Val.Num(pos, i)
-        a(i) = new LazyApply2(func, idx, x, noOff, ev)
-        i += 1
+      if (
+        len > 1 && !func.isInstanceOf[Val.Builtin] && func.params.names.length == 2
+        && func.hasNonCapturingBody
+      ) {
+        val funDefFileScope: FileScope = func.pos match {
+          case null => noOff.fileScope
+          case p    => p.fileScope
+        }
+        val newScope: ValScope = func.defSiteValScope.extendBy(2)
+        val scopeIdx = newScope.length - 2
+        val bindings = newScope.bindings
+        var i = 0
+        while (i < len) {
+          bindings(scopeIdx) = Val.Num(pos, i)
+          bindings(scopeIdx + 1) = arr(i)
+          a(i) = func.evalRhsResolved(newScope, ev, funDefFileScope, noOff)
+          i += 1
+        }
+      } else {
+        var i = 0
+        while (i < len) {
+          val x = arr(i)
+          val idx = Val.Num(pos, i)
+          a(i) = new LazyApply2(func, idx, x, noOff, ev)
+          i += 1
+        }
       }
       Val.Arr(pos, a)
     }
@@ -643,15 +664,40 @@ object ArrayModule extends AbstractFunctionModule {
         val len = a.length
         val result = new Array[Eval](len)
         var count = 0
-        var i = 0
-        while (i < len) {
-          val v = a(i)
-          v.value
-          if (filter_func.apply1(v, noOff)(ev, TailstrictModeDisabled).asBoolean) {
-            result(count) = new LazyApply1(map_func, v, noOff, ev)
-            count += 1
+        // Check if map_func has non-capturing body for scope reuse
+        if (
+          !map_func.isInstanceOf[Val.Builtin] && map_func.params.names.length == 1
+          && map_func.hasNonCapturingBody
+        ) {
+          val funDefFileScope: FileScope = map_func.pos match {
+            case null => noOff.fileScope
+            case p    => p.fileScope
           }
-          i += 1
+          val newScope: ValScope = map_func.defSiteValScope.extendBy(1)
+          val scopeIdx = newScope.length - 1
+          val bindings = newScope.bindings
+          var i = 0
+          while (i < len) {
+            val v = a(i)
+            v.value
+            if (filter_func.apply1(v, noOff)(ev, TailstrictModeDisabled).asBoolean) {
+              bindings(scopeIdx) = v
+              result(count) = map_func.evalRhsResolved(newScope, ev, funDefFileScope, noOff)
+              count += 1
+            }
+            i += 1
+          }
+        } else {
+          var i = 0
+          while (i < len) {
+            val v = a(i)
+            v.value
+            if (filter_func.apply1(v, noOff)(ev, TailstrictModeDisabled).asBoolean) {
+              result(count) = new LazyApply1(map_func, v, noOff, ev)
+              count += 1
+            }
+            i += 1
+          }
         }
         Val.Arr(pos, if (count == len) result else java.util.Arrays.copyOf(result, count))
     },
@@ -690,6 +736,25 @@ object ArrayModule extends AbstractFunctionModule {
             // Skip lazy thunk + Val.Num(index) allocation per element.
             val constVal = body.asInstanceOf[Val]
             java.util.Arrays.fill(a.asInstanceOf[Array[AnyRef]], constVal)
+          } else if (
+            sz > 1 && !func.isInstanceOf[Val.Builtin] && func.params.names.length == 1
+            && func.hasNonCapturingBody
+          ) {
+            // Scope-reuse: evaluate eagerly with a mutable scope slot.
+            val noOff = pos.noOffset
+            val funDefFileScope: FileScope = func.pos match {
+              case null => noOff.fileScope
+              case p    => p.fileScope
+            }
+            val newScope: ValScope = func.defSiteValScope.extendBy(1)
+            val scopeIdx = newScope.length - 1
+            val bindings = newScope.bindings
+            var i = 0
+            while (i < sz) {
+              bindings(scopeIdx) = Val.Num(pos, i)
+              a(i) = func.evalRhsResolved(newScope, ev, funDefFileScope, noOff)
+              i += 1
+            }
           } else {
             val noOff = pos.noOffset
             var i = 0
