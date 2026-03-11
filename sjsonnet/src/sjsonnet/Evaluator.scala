@@ -1514,15 +1514,10 @@ class Evaluator(
                 finally decrementStackDepth()
               }
             }
-            val valueCache = if (sup == null) {
-              Val.Obj.getEmptyValueCacheForObjWithoutSuper(1)
-            } else {
-              Util.preSizedJavaHashMap[Any, Val](4)
-            }
             cachedObj = new Val.Obj(
               objPos, null, false,
               if (asserts != null) triggerAsserts else null,
-              sup, valueCache, null, null, null, null,
+              sup, null, null, null, null, null,
               k, member
             )
             return cachedObj
@@ -1538,15 +1533,10 @@ class Evaluator(
                 finally decrementStackDepth()
               }
             }
-            val valueCache = if (sup == null) {
-              Val.Obj.getEmptyValueCacheForObjWithoutSuper(1)
-            } else {
-              Util.preSizedJavaHashMap[Any, Val](4)
-            }
             cachedObj = new Val.Obj(
               objPos, null, false,
               if (asserts != null) triggerAsserts else null,
-              sup, valueCache, null, null, null, null,
+              sup, null, null, null, null, null,
               k, member
             )
             return cachedObj
@@ -1621,15 +1611,10 @@ class Evaluator(
         val finalKeys = if (idx == n) inlineKeys else java.util.Arrays.copyOf(inlineKeys, idx)
         val finalMembers =
           if (idx == n) inlineMembers else java.util.Arrays.copyOf(inlineMembers, idx)
-        val valueCache = if (sup == null) {
-          Val.Obj.getEmptyValueCacheForObjWithoutSuper(idx)
-        } else {
-          Util.preSizedJavaHashMap[Any, Val](idx + 2)
-        }
         cachedObj = new Val.Obj(
           objPos, null, false,
           if (asserts != null) triggerAsserts else null,
-          sup, valueCache, null, null, null, null,
+          sup, null, null, null, null, null,
           null, null,
           finalKeys, finalMembers
         )
@@ -1674,18 +1659,12 @@ class Evaluator(
       case _ =>
         Error.fail("This case should never be hit", objPos)
     }
-    val valueCache = if (sup == null) {
-      Val.Obj.getEmptyValueCacheForObjWithoutSuper(fields.length)
-    } else {
-      new java.util.HashMap[Any, Val]()
-    }
     cachedObj = new Val.Obj(
       objPos,
       builder,
       false,
       if (asserts != null) triggerAsserts else null,
-      sup,
-      valueCache
+      sup
     )
     cachedObj
   }
@@ -1722,12 +1701,7 @@ class Evaluator(
       }
       ci += 1
     }
-    val valueCache = if (sup == null) {
-      Val.Obj.getEmptyValueCacheForObjWithoutSuper(builder.size())
-    } else {
-      new java.util.HashMap[Any, Val]()
-    }
-    new Val.Obj(e.pos, builder, false, null, sup, valueCache)
+    new Val.Obj(e.pos, builder, false, null, sup)
   }
 
   @tailrec
