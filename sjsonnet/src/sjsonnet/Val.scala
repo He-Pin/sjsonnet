@@ -1049,6 +1049,16 @@ object Val {
     /** Override to expose the function's body AST for pattern detection (e.g. foldl string concat). */
     def bodyExpr: Expr = null
 
+    /**
+     * Returns true if the function body is a simple expression that never creates lazy values
+     * or closures capturing the scope array (ValidId, BinaryOp, UnaryOp, And/Or, IfElse,
+     * or a Val.Literal). This makes scope-reuse safe in eager map/filter loops.
+     */
+    final def hasNonCapturingBody: Boolean = {
+      val body = bodyExpr
+      body != null && Func.isNonCapturing(body)
+    }
+
     // Convenience wrapper: evaluates the function body and resolves any TailCall sentinel.
     // Use this instead of raw `evalRhs` at call sites that bypass `apply*` and consume
     // the result directly (e.g. stdlib scope-reuse fast paths).
@@ -1248,6 +1258,30 @@ object Val {
         val result = evalRhs(newScope, ev, funDefFileScope, outerPos)
         if (tailstrictMode == TailstrictModeDisabled) TailCall.resolve(result) else result
       }
+    }
+  }
+
+  object Func {
+
+    /** Returns true when the body only contains simple non-capturing expressions. */
+    def isNonCapturing(e: Expr): Boolean = (e.tag: @scala.annotation.switch) match {
+      case ExprTags.ValidId  => true
+      case ExprTags.BinaryOp =>
+        val b = e.asInstanceOf[Expr.BinaryOp]
+        isNonCapturing(b.lhs) && isNonCapturing(b.rhs)
+      case ExprTags.UnaryOp =>
+        isNonCapturing(e.asInstanceOf[Expr.UnaryOp].value)
+      case ExprTags.And =>
+        val a = e.asInstanceOf[Expr.And]
+        isNonCapturing(a.lhs) && isNonCapturing(a.rhs)
+      case ExprTags.Or =>
+        val o = e.asInstanceOf[Expr.Or]
+        isNonCapturing(o.lhs) && isNonCapturing(o.rhs)
+      case ExprTags.IfElse =>
+        val ie = e.asInstanceOf[Expr.IfElse]
+        isNonCapturing(ie.cond) && isNonCapturing(ie.`then`) && isNonCapturing(ie.`else`)
+      case _ =>
+        e.isInstanceOf[Val.Literal]
     }
   }
 

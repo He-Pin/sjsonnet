@@ -195,10 +195,34 @@ object ArrayModule extends AbstractFunctionModule {
       val noOff = pos.noOffset
       val len = arg.length
       val result = new Array[Eval](len)
-      var i = 0
-      while (i < len) {
-        result(i) = new LazyApply1(_func, arg(i), noOff, ev)
-        i += 1
+      val body = _func.bodyExpr
+      if (body != null && body.isInstanceOf[Val.Literal]) {
+        // Constant function body: all outputs are the same value.
+        java.util.Arrays.fill(result.asInstanceOf[Array[AnyRef]], body.asInstanceOf[Val])
+      } else if (
+        len > 1 && !_func.isInstanceOf[Val.Builtin] && _func.params.names.length == 1
+        && _func.hasNonCapturingBody
+      ) {
+        // Scope-reuse: evaluate eagerly with a mutable scope slot.
+        val funDefFileScope: FileScope = _func.pos match {
+          case null => noOff.fileScope
+          case p    => p.fileScope
+        }
+        val newScope: ValScope = _func.defSiteValScope.extendBy(1)
+        val scopeIdx = newScope.length - 1
+        val bindings = newScope.bindings
+        var i = 0
+        while (i < len) {
+          bindings(scopeIdx) = arg(i)
+          result(i) = _func.evalRhsResolved(newScope, ev, funDefFileScope, noOff)
+          i += 1
+        }
+      } else {
+        var i = 0
+        while (i < len) {
+          result(i) = new LazyApply1(_func, arg(i), noOff, ev)
+          i += 1
+        }
       }
       Val.Arr(pos, result)
     }

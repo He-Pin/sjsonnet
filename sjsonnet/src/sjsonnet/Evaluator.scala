@@ -308,25 +308,7 @@ class Evaluator(
    * variable reads, literals). Returns false for anything that might create lazy values
    * (arrays, objects, function applications, etc.).
    */
-  private def isNonCapturingBody(e: Expr): Boolean = (e.tag: @scala.annotation.switch) match {
-    case ExprTags.ValidId => true
-    case ExprTags.BinaryOp =>
-      val b = e.asInstanceOf[BinaryOp]
-      isNonCapturingBody(b.lhs) && isNonCapturingBody(b.rhs)
-    case ExprTags.UnaryOp =>
-      isNonCapturingBody(e.asInstanceOf[UnaryOp].value)
-    case ExprTags.And =>
-      val a = e.asInstanceOf[And]
-      isNonCapturingBody(a.lhs) && isNonCapturingBody(a.rhs)
-    case ExprTags.Or =>
-      val o = e.asInstanceOf[Or]
-      isNonCapturingBody(o.lhs) && isNonCapturingBody(o.rhs)
-    case ExprTags.IfElse =>
-      val ie = e.asInstanceOf[IfElse]
-      isNonCapturingBody(ie.cond) && isNonCapturingBody(ie.`then`) && isNonCapturingBody(ie.`else`)
-    case _ =>
-      e.isInstanceOf[Val.Literal]
-  }
+  private def isNonCapturingBody(e: Expr): Boolean = Val.Func.isNonCapturing(e)
 
   /**
    * Fast-path binary op evaluation for Num-Num operands.
