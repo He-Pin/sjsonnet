@@ -1496,13 +1496,25 @@ class Evaluator(
           val k = visitFieldName(fieldName, offset)
           if (k != null) {
             val fieldKey = k
-            val member = new Val.Obj.Member(plus, sep) {
-              def invoke(self: Val.Obj, sup: Val.Obj, fs: FileScope, ev: EvalScope): Val = {
-                checkStackDepth(rhs.pos, fieldKey)
-                try visitExpr(rhs)(createNewScope(self, sup))
-                finally decrementStackDepth()
-              }
+            // ConstMember fast path for simple field bodies
+            val constVal: Val = rhs match {
+              case v: Val => v
+              case vid: ValidId if vid.nameIdx < scope.length =>
+                scope.bindings(vid.nameIdx) match {
+                  case v: Val => v
+                  case _      => null
+                }
+              case _ => null
             }
+            val member: Val.Obj.Member =
+              if (constVal ne null) new Val.Obj.ConstMember(plus, sep, constVal)
+              else new Val.Obj.Member(plus, sep) {
+                def invoke(self: Val.Obj, sup: Val.Obj, fs: FileScope, ev: EvalScope): Val = {
+                  checkStackDepth(rhs.pos, fieldKey)
+                  try visitExpr(rhs)(createNewScope(self, sup))
+                  finally decrementStackDepth()
+                }
+              }
             val assertFn: (Val.Obj, Val.Obj) => Unit =
               if (asserts != null) { (self: Val.Obj, sup: Val.Obj) =>
                 evaluateAsserts(asserts, createNewScope(self, sup))
@@ -1589,11 +1601,27 @@ class Evaluator(
                 di += 1
               }
               inlineKeys(idx) = k
-              inlineMembers(idx) = new Val.Obj.Member(plus, sep) {
-                def invoke(self: Val.Obj, sup: Val.Obj, fs: FileScope, ev: EvalScope): Val = {
-                  checkStackDepth(rhs.pos, fieldKey)
-                  try visitExpr(rhs)(makeNewScope(self, sup))
-                  finally decrementStackDepth()
+              // ConstMember fast path: for simple field bodies (Val literals or
+              // parent-scope ValidId that already resolved to a Val), pre-compute
+              // the value and skip the Member closure + scope extension in invoke.
+              val constVal: Val = rhs match {
+                case v: Val => v
+                case vid: ValidId if vid.nameIdx < scope.length =>
+                  scope.bindings(vid.nameIdx) match {
+                    case v: Val => v
+                    case _      => null
+                  }
+                case _ => null
+              }
+              if (constVal ne null) {
+                inlineMembers(idx) = new Val.Obj.ConstMember(plus, sep, constVal)
+              } else {
+                inlineMembers(idx) = new Val.Obj.Member(plus, sep) {
+                  def invoke(self: Val.Obj, sup: Val.Obj, fs: FileScope, ev: EvalScope): Val = {
+                    checkStackDepth(rhs.pos, fieldKey)
+                    try visitExpr(rhs)(makeNewScope(self, sup))
+                    finally decrementStackDepth()
+                  }
                 }
               }
               idx += 1
@@ -1647,13 +1675,25 @@ class Evaluator(
         val k = visitFieldName(fieldName, offset)
         if (k != null) {
           val fieldKey = k
-          val v = new Val.Obj.Member(plus, sep) {
-            def invoke(self: Val.Obj, sup: Val.Obj, fs: FileScope, ev: EvalScope): Val = {
-              checkStackDepth(rhs.pos, fieldKey)
-              try visitExpr(rhs)(makeNewScope(self, sup))
-              finally decrementStackDepth()
-            }
+          // ConstMember fast path for simple field bodies
+          val constVal: Val = rhs match {
+            case v: Val => v
+            case vid: ValidId if vid.nameIdx < scope.length =>
+              scope.bindings(vid.nameIdx) match {
+                case v: Val => v
+                case _      => null
+              }
+            case _ => null
           }
+          val v: Val.Obj.Member =
+            if (constVal ne null) new Val.Obj.ConstMember(plus, sep, constVal)
+            else new Val.Obj.Member(plus, sep) {
+              def invoke(self: Val.Obj, sup: Val.Obj, fs: FileScope, ev: EvalScope): Val = {
+                checkStackDepth(rhs.pos, fieldKey)
+                try visitExpr(rhs)(makeNewScope(self, sup))
+                finally decrementStackDepth()
+              }
+            }
           val previousValue = builder.put(k, v)
           if (previousValue != null) {
             Error.fail(s"Duplicate key $k in evaluated object.", offset)
