@@ -403,6 +403,7 @@ object ArrayModule extends AbstractFunctionModule {
     private var cachedFrom = Int.MinValue
     private var cachedTo = Int.MinValue
     private var cachedArr: Array[Eval] = null
+    private var cachedSize: Int = 0
 
     def evalRhs(from: Eval, to: Eval, ev: EvalScope, pos: Position): Val = {
       val fromInt = from.value.asInt
@@ -411,21 +412,25 @@ object ArrayModule extends AbstractFunctionModule {
         cachedArr = null
         cachedEv = ev
       }
+      val size = math.max(0, toInt - fromInt + 1)
       val ca = cachedArr
       if (ca != null && fromInt == cachedFrom && toInt == cachedTo) {
-        return Val.Arr(pos, ca)
+        val r = Val.Arr(pos, ca)
+        // Only propagate range metadata if the cached array hasn't been materialized yet
+        if (cachedSize > 0 && ca(0) == null) r.setRange(fromInt, cachedSize, pos)
+        return r
       }
-      val size = math.max(0, toInt - fromInt + 1)
+      // Use lazy range: leave entries null, set range metadata.
+      // Val.Arr.value(i) will create Val.Num on demand;
+      // asLazyArray will bulk-materialize when needed.
       val arr = new Array[Eval](size)
-      var i = 0
-      while (i < size) {
-        arr(i) = Val.Num(pos, fromInt + i)
-        i += 1
-      }
       cachedFrom = fromInt
       cachedTo = toInt
       cachedArr = arr
-      Val.Arr(pos, arr)
+      cachedSize = size
+      val r = Val.Arr(pos, arr)
+      if (size > 0) r.setRange(fromInt, size, pos)
+      r
     }
   }
 

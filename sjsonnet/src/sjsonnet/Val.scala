@@ -328,6 +328,18 @@ object Val {
       result
     }
 
+    /** Try to compare elements at index i between this array and another without
+      * allocating Val.Num objects. Works when both elements are unmaterialized range entries.
+      * Returns the comparison result if both elements are range elements.
+      * Returns Int.MinValue if either element is not a range element (caller must fall back). */
+    def tryCompareRangeElements(i: Int, other: Arr): Int = {
+      if (_rangePos != null && other._rangePos != null &&
+          i < rangeLen && i < other.rangeLen &&
+          arr(i) == null && other.arr(i) == null) {
+        Integer.compare(rangeFrom + i, other.rangeFrom + i)
+      } else Int.MinValue
+    }
+
     def concat(newPos: Position, rhs: Arr): Arr = {
       val lArr = arr
       val rArr = rhs.arr
