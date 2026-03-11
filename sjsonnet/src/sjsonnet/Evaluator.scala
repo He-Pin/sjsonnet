@@ -205,7 +205,8 @@ class Evaluator(
       specs: List[CompSpec],
       scope: ValScope,
       body: Expr,
-      results: collection.mutable.ArrayBuilder.ofRef[Eval]): Unit = specs match {
+      results: collection.mutable.ArrayBuilder.ofRef[Eval]): Unit = {
+    specs match {
     case (spec @ ForSpec(_, name, expr)) :: rest =>
       visitExpr(expr)(scope) match {
         case a: Val.Arr =>
@@ -268,6 +269,11 @@ class Evaluator(
                 results += visitExpr(body)(scope.extendSimple(lazyArr(j)))
                 j += 1
               }
+            case (nextFor: ForSpec) :: Nil
+                if lazyArr.length > 1
+                  && isNonCapturingBody(body)
+                  && isInvariantExpr(nextFor.cond, scope.bindings.length) =>
+              visitCompTwoLevel(lazyArr, nextFor.cond, scope, body, results)
             case _ =>
               var j = 0
               while (j < lazyArr.length) {
@@ -297,7 +303,7 @@ class Evaluator(
       }
     case Nil =>
       results += visitExpr(body)(scope)
-  }
+  }}
 
   /**
    * Check if a body expression is "non-capturing" — its evaluation result doesn't retain
@@ -309,6 +315,108 @@ class Evaluator(
    * (arrays, objects, function applications, etc.).
    */
   private def isNonCapturingBody(e: Expr): Boolean = Val.Func.isNonCapturing(e)
+
+  /** Check if an expression only references scope variables with nameIdx < maxIdx.
+    * Returns true if the expression is "loop invariant" under a scope extension at maxIdx,
+    * meaning it doesn't depend on any variable introduced at or after maxIdx. */
+  private def isInvariantExpr(e: Expr, maxIdx: Int): Boolean = {
+    // Val nodes (Num, Str, True, False, Null, etc.) are self-contained — visitExpr returns them
+    // directly without scope lookups, so they're always loop-invariant.
+    if (e.isInstanceOf[Val]) return true
+    (e.tag: @scala.annotation.switch) match {
+      case ExprTags.ValidId      => e.asInstanceOf[ValidId].nameIdx < maxIdx
+      case ExprTags.BinaryOp =>
+        val b = e.asInstanceOf[BinaryOp]
+        isInvariantExpr(b.lhs, maxIdx) && isInvariantExpr(b.rhs, maxIdx)
+      case ExprTags.UnaryOp      => isInvariantExpr(e.asInstanceOf[UnaryOp].value, maxIdx)
+      case ExprTags.Select       => isInvariantExpr(e.asInstanceOf[Select].value, maxIdx)
+      case ExprTags.And =>
+        val a = e.asInstanceOf[And]; isInvariantExpr(a.lhs, maxIdx) && isInvariantExpr(a.rhs, maxIdx)
+      case ExprTags.Or =>
+        val o = e.asInstanceOf[Or]; isInvariantExpr(o.lhs, maxIdx) && isInvariantExpr(o.rhs, maxIdx)
+      case ExprTags.ApplyBuiltin0 => true
+      case ExprTags.ApplyBuiltin1 => isInvariantExpr(e.asInstanceOf[ApplyBuiltin1].a1, maxIdx)
+      case ExprTags.ApplyBuiltin2 =>
+        val a = e.asInstanceOf[ApplyBuiltin2]
+        isInvariantExpr(a.a1, maxIdx) && isInvariantExpr(a.a2, maxIdx)
+      case ExprTags.ApplyBuiltin3 =>
+        val a = e.asInstanceOf[ApplyBuiltin3]
+        isInvariantExpr(a.a1, maxIdx) && isInvariantExpr(a.a2, maxIdx) && isInvariantExpr(a.a3, maxIdx)
+      case ExprTags.Apply0       => isInvariantExpr(e.asInstanceOf[Apply0].value, maxIdx)
+      case ExprTags.Apply1 =>
+        val a = e.asInstanceOf[Apply1]
+        isInvariantExpr(a.value, maxIdx) && isInvariantExpr(a.a1, maxIdx)
+      case ExprTags.Apply2 =>
+        val a = e.asInstanceOf[Apply2]
+        isInvariantExpr(a.value, maxIdx) && isInvariantExpr(a.a1, maxIdx) && isInvariantExpr(a.a2, maxIdx)
+      case ExprTags.Apply3 =>
+        val a = e.asInstanceOf[Apply3]
+        isInvariantExpr(a.value, maxIdx) && isInvariantExpr(a.a1, maxIdx) && isInvariantExpr(a.a2, maxIdx) && isInvariantExpr(a.a3, maxIdx)
+      case _ => false
+    }
+  }
+
+  /** Extracted two-level invariant comprehension handler.
+    * For `[body for outer in A for inner in B]` where B doesn't depend on outer
+    * and body is non-capturing. Evaluates B once and uses a single mutable scope. */
+  private def visitCompTwoLevel(
+      outerArr: Array[Eval],
+      innerExpr: Expr,
+      scope: ValScope,
+      body: Expr,
+      results: collection.mutable.ArrayBuilder.ofRef[Eval]): Unit = {
+    val innerArr = visitExpr(innerExpr)(scope).asInstanceOf[Val.Arr]
+    if (debugStats != null) debugStats.arrayCompIterations += innerArr.length
+    val innerLazy = innerArr.asLazyArray
+    val scopeLen = scope.bindings.length
+    val mutableScope = scope.extendBy(2)
+    val extBindings = mutableScope.bindings
+    val outerSlot = scopeLen
+    val innerSlot = scopeLen + 1
+    body match {
+      case binOp: BinaryOp
+          if binOp.lhs.tag == ExprTags.ValidId
+            && binOp.rhs.tag == ExprTags.ValidId =>
+        val lhsIdx = binOp.lhs.asInstanceOf[ValidId].nameIdx
+        val rhsIdx = binOp.rhs.asInstanceOf[ValidId].nameIdx
+        val op = binOp.op
+        val bpos = binOp.pos
+        var i = 0
+        while (i < outerArr.length) {
+          extBindings(outerSlot) = outerArr(i)
+          var j = 0
+          while (j < innerLazy.length) {
+            extBindings(innerSlot) = innerLazy(j)
+            val l = extBindings(lhsIdx).value
+            val r = extBindings(rhsIdx).value
+            l match {
+              case ln: Val.Num => r match {
+                case rn: Val.Num =>
+                  results += evalBinaryOpNumNum(op, ln, rn, bpos)
+                case _ =>
+                  results += visitBinaryOpValues(op, l, r, bpos)
+              }
+              case _ =>
+                results += visitBinaryOpValues(op, l, r, bpos)
+            }
+            j += 1
+          }
+          i += 1
+        }
+      case _ =>
+        var i = 0
+        while (i < outerArr.length) {
+          extBindings(outerSlot) = outerArr(i)
+          var j = 0
+          while (j < innerLazy.length) {
+            extBindings(innerSlot) = innerLazy(j)
+            results += visitExpr(body)(mutableScope)
+            j += 1
+          }
+          i += 1
+        }
+    }
+  }
 
   /**
    * Fast-path binary op evaluation for Num-Num operands.
