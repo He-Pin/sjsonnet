@@ -1432,46 +1432,33 @@ class Evaluator(
     arrF
   }
 
+  /** Evaluate all assert statements in a scope. Shared by single-field and general paths. */
+  private def evaluateAsserts(asserts: Array[Member.AssertStmt], newScope: ValScope): Unit = {
+    var i = 0
+    while (i < asserts.length) {
+      val a = asserts(i)
+      if (!visitExpr(a.value)(newScope).isInstanceOf[Val.True]) {
+        a.msg match {
+          case null => Error.fail("Assertion failed", a.value.pos)
+          case msg  =>
+            Error.fail(
+              "Assertion failed: " + visitExpr(msg)(newScope).cast[Val.Str].str,
+              a.value.pos
+            )
+        }
+      }
+      i += 1
+    }
+  }
+
   def visitMemberList(objPos: Position, e: ObjBody.MemberList, sup: Val.Obj)(implicit
       scope: ValScope): Val.Obj = {
     val asserts = e.asserts
     val fields = e.fields
-    var cachedSimpleScope: Option[ValScope] = None
-    var cachedObj: Val.Obj = null
 
-    def makeNewScope(self: Val.Obj, sup: Val.Obj): ValScope = {
-      if ((sup eq null) && (self eq cachedObj)) {
-        cachedSimpleScope match {
-          case Some(s) => s
-          case None    =>
-            val newScope = createNewScope(self, sup)
-            cachedSimpleScope = Some(newScope)
-            newScope
-        }
-      } else createNewScope(self, sup)
-    }
-
-    // Trigger an object's own assertions. This defines a closure which is
-    // invoked from within Val.Obj; it should not be called directly.
-    def triggerAsserts(self: Val.Obj, sup: Val.Obj): Unit = {
-      val newScope: ValScope = makeNewScope(self, sup)
-      var i = 0
-      while (i < asserts.length) {
-        val a = asserts(i)
-        if (!visitExpr(a.value)(newScope).isInstanceOf[Val.True]) {
-          a.msg match {
-            case null => Error.fail("Assertion failed", a.value.pos)
-            case msg  =>
-              Error.fail(
-                "Assertion failed: " + visitExpr(msg)(newScope).cast[Val.Str].str,
-                a.value.pos
-              )
-          }
-        }
-        i += 1
-      }
-    }
-
+    // Scope creation helper — no mutable vars captured, safe for all paths.
+    // Declared first so the single-field fast path can use it without triggering
+    // ObjectRef boxing of the cache vars used by multi-field/general paths.
     def createNewScope(self: Val.Obj, sup: Val.Obj): ValScope = {
       val scopeLen = scope.length
       val binds = e.binds
@@ -1499,7 +1486,9 @@ class Evaluator(
       newScope
     }
 
-    // Single-field fast path: avoid LinkedHashMap allocation for 1-field objects
+    // Single-field fast path: avoid LinkedHashMap allocation for 1-field objects.
+    // Uses createNewScope directly instead of makeNewScope to avoid capturing
+    // cachedSimpleScope/cachedObj vars (which would cause ObjectRef boxing).
     if (fields.length == 1) {
       val field = fields(0)
       field match {
@@ -1510,17 +1499,20 @@ class Evaluator(
             val member = new Val.Obj.Member(plus, sep) {
               def invoke(self: Val.Obj, sup: Val.Obj, fs: FileScope, ev: EvalScope): Val = {
                 checkStackDepth(rhs.pos, fieldKey)
-                try visitExpr(rhs)(makeNewScope(self, sup))
+                try visitExpr(rhs)(createNewScope(self, sup))
                 finally decrementStackDepth()
               }
             }
-            cachedObj = new Val.Obj(
-              objPos, null, false,
-              if (asserts != null) triggerAsserts else null,
+            val assertFn: (Val.Obj, Val.Obj) => Unit =
+              if (asserts != null) { (self: Val.Obj, sup: Val.Obj) =>
+                evaluateAsserts(asserts, createNewScope(self, sup))
+              }
+              else null
+            return new Val.Obj(
+              objPos, null, false, assertFn,
               sup, null, null, null, null, null,
               k, member
             )
-            return cachedObj
           }
         case Member.Field(offset, fieldName, false, argSpec, sep, rhs) =>
           val k = visitFieldName(fieldName, offset)
@@ -1529,20 +1521,47 @@ class Evaluator(
             val member = new Val.Obj.Member(false, sep) {
               def invoke(self: Val.Obj, sup: Val.Obj, fs: FileScope, ev: EvalScope): Val = {
                 checkStackDepth(rhs.pos, fieldKey)
-                try visitMethod(rhs, argSpec, offset)(makeNewScope(self, sup))
+                try visitMethod(rhs, argSpec, offset)(createNewScope(self, sup))
                 finally decrementStackDepth()
               }
             }
-            cachedObj = new Val.Obj(
-              objPos, null, false,
-              if (asserts != null) triggerAsserts else null,
+            val assertFn: (Val.Obj, Val.Obj) => Unit =
+              if (asserts != null) { (self: Val.Obj, sup: Val.Obj) =>
+                evaluateAsserts(asserts, createNewScope(self, sup))
+              }
+              else null
+            return new Val.Obj(
+              objPos, null, false, assertFn,
               sup, null, null, null, null, null,
               k, member
             )
-            return cachedObj
           }
         case _ => // fall through to general path
       }
+    }
+
+    // Cache vars for multi-field and general paths — only allocated when needed.
+    // By declaring these AFTER the single-field early return, we avoid ObjectRef
+    // boxing overhead for single-field objects (e.g., bench.02's ~150K Fib extensions).
+    var cachedSimpleScope: ValScope = null.asInstanceOf[ValScope]
+    var cachedObj: Val.Obj = null
+
+    def makeNewScope(self: Val.Obj, sup: Val.Obj): ValScope = {
+      if ((sup eq null) && (self eq cachedObj)) {
+        val cs = cachedSimpleScope
+        if (cs.bindings ne null) cs
+        else {
+          val newScope = createNewScope(self, sup)
+          cachedSimpleScope = newScope
+          newScope
+        }
+      } else createNewScope(self, sup)
+    }
+
+    // Trigger an object's own assertions. This defines a closure which is
+    // invoked from within Val.Obj; it should not be called directly.
+    def triggerAsserts(self: Val.Obj, sup: Val.Obj): Unit = {
+      evaluateAsserts(asserts, makeNewScope(self, sup))
     }
 
     // Multi-field inline fast path: use flat arrays instead of LinkedHashMap for small objects
