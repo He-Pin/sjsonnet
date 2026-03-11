@@ -671,3 +671,16 @@
   - A/B comparison:
     - `bench.06` (sort benchmark): `0.481 → 0.430 ms/op` (-10.6%)
   - Second confirmation: `0.481 → 0.430 ms/op` (-10.6%)
+
+## Wave 29: const-member-wave
+- Scope: For object fields with simple bodies (Val literals or parent-scope ValidId references that are already evaluated), use `Val.Obj.ConstMember` instead of anonymous Member closures. ConstMember.invoke returns the stored value directly — no scope extension, no visitExpr dispatch.
+- Outcome: **kept**.
+- Commit: `743a61e1`
+- Validation:
+  - Tests: 32/32 passed
+  - Full regression suite: 35/35 benchmarks pass, no regressions
+  - Key benchmark improvements:
+    - `realistic2`: `74.4 → 55.8 ms/op` (-25.0%)
+    - `realistic2` alloc: `186MB → 173MB` (-7.0%)
+    - `bench.02`: `32.4 ms/op` (no regression)
+  - Applied to all three visitMemberList paths (single-field, inline 2-8, general 9+)
