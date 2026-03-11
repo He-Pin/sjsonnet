@@ -275,17 +275,54 @@ object Val {
   final case class Arr(var pos: Position, private val arr: Array[? <: Eval]) extends Literal {
     def prettyName = "array"
 
+    // Lazy range support: null entries at indices 0..<rangeLen represent
+    // Val.Num(_rangePos, rangeFrom + i). Avoids allocating one Val.Num per element.
+    private var rangeFrom: Int = 0
+    private var rangeLen: Int = 0
+    private var _rangePos: Position = null
+
+    @inline def isRange: Boolean = _rangePos != null
+
+    def setRange(from: Int, len: Int, rpos: Position): Unit = {
+      rangeFrom = from
+      rangeLen = len
+      _rangePos = rpos
+    }
+
+    private def materializeRange(): Unit = {
+      val a = arr.asInstanceOf[Array[Eval]]
+      val from = rangeFrom
+      val rp = _rangePos
+      val rl = rangeLen
+      var i = 0
+      while (i < rl) {
+        if (a(i) == null) a(i) = Val.Num(rp, from + i)
+        i += 1
+      }
+      _rangePos = null
+    }
+
     override def asArr: Arr = this
     def length: Int = arr.length
-    def value(i: Int): Val = arr(i).value
+    def value(i: Int): Val = {
+      val e = arr(i)
+      if (e != null) e.value
+      else Val.Num(_rangePos, rangeFrom + i)
+    }
 
-    def asLazyArray: Array[Eval] = arr.asInstanceOf[Array[Eval]]
+    /** Raw backing array (may contain nulls for range elements). */
+    def rawArray: Array[? <: Eval] = arr
+
+    def asLazyArray: Array[Eval] = {
+      if (_rangePos != null) materializeRange()
+      arr.asInstanceOf[Array[Eval]]
+    }
     def asStrictArray: Array[Val] = {
       val len = arr.length
       val result = new Array[Val](len)
       var i = 0
       while (i < len) {
-        result(i) = arr(i).value
+        result(i) = value(i)
         i += 1
       }
       result
@@ -296,24 +333,35 @@ object Val {
       val rArr = rhs.arr
       val lLen = lArr.length
       val rLen = rArr.length
+      // Materialize rhs range to avoid propagating two sets of range metadata
+      if (rhs._rangePos != null) rhs.materializeRange()
       val result = new Array[Eval](lLen + rLen)
       System.arraycopy(lArr, 0, result, 0, lLen)
       System.arraycopy(rArr, 0, result, lLen, rLen)
-      Arr(newPos, result)
+      val r = Arr(newPos, result)
+      if (_rangePos != null) {
+        r.rangeFrom = rangeFrom
+        r.rangeLen = rangeLen
+        r._rangePos = _rangePos
+      }
+      r
     }
 
-    def iterator: Iterator[Val] = arr.iterator.map(_.value)
+    def iterator: Iterator[Val] = {
+      if (_rangePos != null) materializeRange()
+      arr.iterator.map(_.value)
+    }
     def foreach[U](f: Val => U): Unit = {
       var i = 0
       while (i < arr.length) {
-        f(arr(i).value)
+        f(value(i))
         i += 1
       }
     }
     def forall(f: Val => Boolean): Boolean = {
       var i = 0
       while (i < arr.length) {
-        if (!f(arr(i).value)) return false
+        if (!f(value(i))) return false
         i += 1
       }
       true
@@ -418,7 +466,9 @@ object Val {
       private val staticLayout: StaticObjectLayout = null,
       private val staticValues: Array[Val] = null,
       private val singleFieldKey: String = null,
-      private val singleFieldMember: Obj.Member = null)
+      private val singleFieldMember: Obj.Member = null,
+      private val inlineFieldKeys: Array[String] = null,
+      private val inlineFieldMembers: Array[Obj.Member] = null)
       extends Literal
       with Expr.ObjBody {
     private var asserting: Boolean = false
@@ -443,6 +493,18 @@ object Val {
           // Single-field object: lazily construct LinkedHashMap from inline storage
           val m = Util.preSizedJavaLinkedHashMap[String, Val.Obj.Member](1)
           m.put(singleFieldKey, singleFieldMember)
+          this.value0 = m
+        } else if (inlineFieldKeys != null) {
+          // Multi-field inline object: lazily construct LinkedHashMap from arrays
+          val keys = inlineFieldKeys
+          val members = inlineFieldMembers
+          val n = keys.length
+          val m = Util.preSizedJavaLinkedHashMap[String, Val.Obj.Member](n)
+          var i = 0
+          while (i < n) {
+            m.put(keys(i), members(i))
+            i += 1
+          }
           this.value0 = m
         } else {
           // value0 is always defined for non-static objects, so if we're computing it here
@@ -648,13 +710,25 @@ object Val {
     }
 
     @inline def hasKeys: Boolean = {
-      val m = if (static || `super` != null) getAllKeys else getValue0
-      !m.isEmpty
+      if (inlineFieldKeys != null && `super` == null) inlineFieldKeys.length > 0
+      else {
+        val m = if (static || `super` != null) getAllKeys else getValue0
+        !m.isEmpty
+      }
     }
 
     @inline def containsKey(k: String): Boolean = {
       if (staticLayout != null && `super` == null) staticLayout.indices.containsKey(k)
-      else {
+      else if (inlineFieldKeys != null && `super` == null) {
+        val keys = inlineFieldKeys
+        val n = keys.length
+        var i = 0
+        while (i < n) {
+          if (keys(i).equals(k)) return true
+          i += 1
+        }
+        false
+      } else {
         val m = if (static || `super` != null) getAllKeys else getValue0
         m.containsKey(k)
       }
@@ -663,6 +737,16 @@ object Val {
     @inline def containsVisibleKey(k: String): Boolean = {
       if (static || `super` != null) {
         getAllKeys.get(k) == java.lang.Boolean.FALSE
+      } else if (inlineFieldKeys != null) {
+        val keys = inlineFieldKeys
+        val members = inlineFieldMembers
+        val n = keys.length
+        var i = 0
+        while (i < n) {
+          if (keys(i).equals(k)) return members(i).visibility != Visibility.Hidden
+          i += 1
+        }
+        false
       } else {
         val m = getValue0.get(k)
         m != null && (m.visibility != Visibility.Hidden)
@@ -671,6 +755,7 @@ object Val {
 
     lazy val allKeyNames: Array[String] = {
       if (staticLayout != null && `super` == null) staticLayout.keys.clone()
+      else if (inlineFieldKeys != null && `super` == null) inlineFieldKeys.clone()
       else {
         val m = if (static || `super` != null) getAllKeys else getValue0
         m.keySet().toArray(new Array[String](m.size()))
@@ -682,9 +767,33 @@ object Val {
       if (keys.length < 2) keys else keys.sorted(Util.CodepointStringOrdering)
     }
 
-    lazy val visibleKeyNames: Array[String] = {
+    lazy val visibleKeyNames: Array[String] = computeVisibleKeyNames()
+
+    private def computeVisibleKeyNames(): Array[String] = {
       if (static) {
         allKeyNames
+      } else if (inlineFieldKeys != null && `super` == null) {
+        // Inline multi-field fast path: check if all visible (common case)
+        val keys = inlineFieldKeys
+        val members = inlineFieldMembers
+        val n = keys.length
+        var allVisible = true
+        var i = 0
+        while (allVisible && i < n) {
+          if (members(i).visibility == Visibility.Hidden) allVisible = false
+          i += 1
+        }
+        if (allVisible) keys
+        else {
+          val buf = new mutable.ArrayBuilder.ofRef[String]
+          buf.sizeHint(n)
+          var j = 0
+          while (j < n) {
+            if (members(j).visibility != Visibility.Hidden) buf += keys(j)
+            j += 1
+          }
+          buf.result()
+        }
       } else {
         val buf = new mutable.ArrayBuilder.ofRef[String]
         if (`super` == null) {
@@ -796,6 +905,31 @@ object Val {
           } else {
             if (s == null) null else s.valueRaw(k, self, pos, addTo, addKey)
           }
+        } else if (inlineFieldKeys != null) {
+          // Inline multi-field fast path: linear scan over small arrays
+          val keys = inlineFieldKeys
+          val members = inlineFieldMembers
+          val n = keys.length
+          var i = 0
+          while (i < n) {
+            if (keys(i).equals(k)) {
+              val m = members(i)
+              if (!evaluator.settings.brokenAssertionLogic || !m.deprecatedSkipAsserts) {
+                self.triggerAllAsserts(evaluator.settings.brokenAssertionLogic)
+              }
+              val vv = m.invoke(self, s, pos.fileScope, evaluator)
+              val v = if (s != null && m.add) {
+                s.valueRaw(k, self, pos, null, null) match {
+                  case null     => vv
+                  case supValue => mergeMember(supValue, vv, pos)
+                }
+              } else vv
+              if (addTo != null && m.cached) addTo.put(addKey, v)
+              return v
+            }
+            i += 1
+          }
+          if (s == null) null else s.valueRaw(k, self, pos, addTo, addKey)
         } else {
           getValue0.get(k) match {
             case null =>

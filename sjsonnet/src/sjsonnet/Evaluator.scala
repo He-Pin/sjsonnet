@@ -1573,6 +1573,88 @@ class Evaluator(
       }
     }
 
+    // Multi-field inline fast path: use flat arrays instead of LinkedHashMap for small objects
+    if (fields.length >= 2 && fields.length <= 8) {
+      val n = fields.length
+      val inlineKeys = new Array[String](n)
+      val inlineMembers = new Array[Val.Obj.Member](n)
+      var idx = 0
+      var canInline = true
+      var fi = 0
+      while (canInline && fi < n) {
+        fields(fi) match {
+          case Member.Field(offset, fieldName, plus, null, sep, rhs) =>
+            val k = visitFieldName(fieldName, offset)
+            if (k == null) {
+              canInline = false
+            } else {
+              val fieldKey = k
+              // Check for duplicate keys
+              var di = 0
+              while (di < idx) {
+                if (inlineKeys(di).equals(k)) {
+                  Error.fail(s"Duplicate key $k in evaluated object.", offset)
+                }
+                di += 1
+              }
+              inlineKeys(idx) = k
+              inlineMembers(idx) = new Val.Obj.Member(plus, sep) {
+                def invoke(self: Val.Obj, sup: Val.Obj, fs: FileScope, ev: EvalScope): Val = {
+                  checkStackDepth(rhs.pos, fieldKey)
+                  try visitExpr(rhs)(makeNewScope(self, sup))
+                  finally decrementStackDepth()
+                }
+              }
+              idx += 1
+            }
+          case Member.Field(offset, fieldName, false, argSpec, sep, rhs) =>
+            val k = visitFieldName(fieldName, offset)
+            if (k == null) {
+              canInline = false
+            } else {
+              val fieldKey = k
+              var di = 0
+              while (di < idx) {
+                if (inlineKeys(di).equals(k)) {
+                  Error.fail(s"Duplicate key $k in evaluated object.", offset)
+                }
+                di += 1
+              }
+              inlineKeys(idx) = k
+              inlineMembers(idx) = new Val.Obj.Member(false, sep) {
+                def invoke(self: Val.Obj, sup: Val.Obj, fs: FileScope, ev: EvalScope): Val = {
+                  checkStackDepth(rhs.pos, fieldKey)
+                  try visitMethod(rhs, argSpec, offset)(makeNewScope(self, sup))
+                  finally decrementStackDepth()
+                }
+              }
+              idx += 1
+            }
+          case _ =>
+            canInline = false
+        }
+        fi += 1
+      }
+      if (canInline && idx > 0) {
+        val finalKeys = if (idx == n) inlineKeys else java.util.Arrays.copyOf(inlineKeys, idx)
+        val finalMembers =
+          if (idx == n) inlineMembers else java.util.Arrays.copyOf(inlineMembers, idx)
+        val valueCache = if (sup == null) {
+          Val.Obj.getEmptyValueCacheForObjWithoutSuper(idx)
+        } else {
+          Util.preSizedJavaHashMap[Any, Val](idx + 2)
+        }
+        cachedObj = new Val.Obj(
+          objPos, null, false,
+          if (asserts != null) triggerAsserts else null,
+          sup, valueCache, null, null, null, null,
+          null, null,
+          finalKeys, finalMembers
+        )
+        return cachedObj
+      }
+    }
+
     val builder = Util.preSizedJavaLinkedHashMap[String, Val.Obj.Member](fields.length)
     fields.foreach {
       case Member.Field(offset, fieldName, plus, null, sep, rhs) =>
@@ -1732,14 +1814,18 @@ class Evaluator(
     }
     case xa: Val.Arr => y match {
       case ya: Val.Arr =>
+        // Use rawArray to avoid materializing lazy range elements
+        val xArr = xa.rawArray
+        val yArr = ya.rawArray
         val len = math.min(xa.length, ya.length)
+        // Phase 1: skip shared Eval references (including nulls from lazy ranges)
         var i = 0
+        while (i < len && (xArr(i) eq yArr(i))) { i += 1 }
+        // Phase 2: compare from first mismatch onwards
         while (i < len) {
           val xi = xa.value(i)
           val yi = ya.value(i)
-          // Reference equality short-circuit for shared array elements
           if (!(xi eq yi)) {
-            // Inline numeric fast path to avoid polymorphic compare() dispatch
             val cmp = xi match {
               case xn: Val.Num => yi match {
                 case yn: Val.Num => java.lang.Double.compare(xn.rawDouble, yn.rawDouble)
@@ -1776,9 +1862,15 @@ class Evaluator(
         case y: Val.Arr =>
           val xlen = x.length
           if (xlen != y.length) return false
+          // Use rawArray to skip shared Eval refs (including nulls from lazy ranges)
+          val xArr = x.rawArray
+          val yArr = y.rawArray
           var i = 0
+          while (i < xlen && (xArr(i) eq yArr(i))) { i += 1 }
           while (i < xlen) {
-            if (!equal(x.value(i), y.value(i))) return false
+            val xv = x.value(i)
+            val yv = y.value(i)
+            if (!(xv eq yv) && !equal(xv, yv)) return false
             i += 1
           }
           true
