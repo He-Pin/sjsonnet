@@ -164,6 +164,9 @@ final class LazyDefault(
 sealed abstract class Val extends Eval {
   final def value: Val = this
 
+  /** Runtime type tag for O(1) dispatch in Materializer. */
+  private[sjsonnet] def valTag: Byte
+
   def pos: Position
   def prettyName: String
 
@@ -199,6 +202,16 @@ object Val {
   // IEEE 754 doubles precisely represent integers up to 2^53, beyond which precision is lost
   private[sjsonnet] final val DOUBLE_MAX_SAFE_INTEGER = (1L << 53) - 1
   private[sjsonnet] final val DOUBLE_MIN_SAFE_INTEGER = -((1L << 53) - 1)
+
+  // Runtime type tags for O(1) dispatch in Materializer (tableswitch).
+  private[sjsonnet] final val TAG_STR: Byte = 0
+  private[sjsonnet] final val TAG_NUM: Byte = 1
+  private[sjsonnet] final val TAG_TRUE: Byte = 2
+  private[sjsonnet] final val TAG_FALSE: Byte = 3
+  private[sjsonnet] final val TAG_NULL: Byte = 4
+  private[sjsonnet] final val TAG_ARR: Byte = 5
+  private[sjsonnet] final val TAG_OBJ: Byte = 6
+  private[sjsonnet] final val TAG_FUNC: Byte = 7
 
   abstract class Literal extends Val with Expr {
     final override private[sjsonnet] def tag = ExprTags.`Val.Literal`
@@ -244,16 +257,20 @@ object Val {
 
   final case class True(var pos: Position) extends Bool {
     def prettyName = "boolean"
+    private[sjsonnet] def valTag: Byte = TAG_TRUE
   }
   final case class False(var pos: Position) extends Bool {
     def prettyName = "boolean"
+    private[sjsonnet] def valTag: Byte = TAG_FALSE
   }
   final case class Null(var pos: Position) extends Literal {
     def prettyName = "null"
+    private[sjsonnet] def valTag: Byte = TAG_NULL
   }
   final case class Str(var pos: Position, str: String) extends Literal {
     def prettyName = "string"
     override def asString: String = str
+    private[sjsonnet] def valTag: Byte = TAG_STR
   }
   final case class Num(var pos: Position, private val num: Double) extends Literal {
     if (num.isInfinite) {
@@ -294,10 +311,12 @@ object Val {
       }
       num
     }
+    private[sjsonnet] def valTag: Byte = TAG_NUM
   }
 
   final case class Arr(var pos: Position, private val arr: Array[? <: Eval]) extends Literal {
     def prettyName = "array"
+    private[sjsonnet] def valTag: Byte = TAG_ARR
 
     // Lazy range support: null entries at indices 0..<rangeLen represent
     // Val.Num(_rangePos, rangeFrom + i). Avoids allocating one Val.Num per element.
@@ -507,6 +526,7 @@ object Val {
       private val inlineFieldMembers: Array[Obj.Member] = null)
       extends Literal
       with Expr.ObjBody {
+    private[sjsonnet] def valTag: Byte = TAG_OBJ
     private var asserting: Boolean = false
     // Pre-computed flag: true if this object or any super has assert statements.
     // Computed O(1) at construction from the super chain (super is already constructed).
@@ -1103,6 +1123,7 @@ object Val {
       extends Val
       with Expr {
     final override private[sjsonnet] def tag = ExprTags.`Val.Func`
+    private[sjsonnet] def valTag: Byte = TAG_FUNC
 
     def evalRhs(scope: ValScope, ev: EvalScope, fs: FileScope, pos: Position): Val
 
@@ -1590,6 +1611,7 @@ final class TailCall(
     val callSiteExpr: Expr,
     val tailstrictMode: TailstrictMode)
     extends Val {
+  private[sjsonnet] def valTag: Byte = -1
   def pos: Position = callSiteExpr.pos
   def prettyName = "tailcall"
   def exprErrorString: String = callSiteExpr.exprErrorString
