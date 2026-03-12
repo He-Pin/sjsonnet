@@ -621,6 +621,22 @@ object Val {
     def addSuper(pos: Position, lhs: Val.Obj): Val.Obj = {
       // Fast path: no super chain — avoid ArrayBuilder + Array allocation
       if (getSuper == null) {
+        if (excludedKeys == null) {
+          // No exclusions: preserve optimized storage to avoid LinkedHashMap creation
+          if (singleFieldKey != null) {
+            return new Val.Obj(
+              this.pos, null, false, this.triggerAsserts, lhs,
+              null, null, null, null, null,
+              singleFieldKey, singleFieldMember
+            )
+          } else if (inlineFieldKeys != null) {
+            return new Val.Obj(
+              this.pos, null, false, this.triggerAsserts, lhs,
+              null, null, null, null, null,
+              null, null, inlineFieldKeys, inlineFieldMembers
+            )
+          }
+        }
         val filteredExcluded = if (excludedKeys != null) {
           Util.intersect(excludedKeys, getValue0.keySet())
         } else null
@@ -641,7 +657,13 @@ object Val {
       // Pre-collect all keys defined in this chain once (only needed if any obj has excludedKeys)
       lazy val keysInThisChain: java.util.Set[String] = {
         val set = Util.preSizedJavaHashSet[String](chain.length * 4)
-        for (s <- chain) set.addAll(s.getValue0.keySet())
+        for (s <- chain) {
+          if (s.singleFieldKey != null) set.add(s.singleFieldKey)
+          else if (s.inlineFieldKeys != null) {
+            val keys = s.inlineFieldKeys
+            var j = 0; while (j < keys.length) { set.add(keys(j)); j += 1 }
+          } else set.addAll(s.getValue0.keySet())
+        }
         set
       }
 
@@ -653,16 +675,31 @@ object Val {
         val filteredExcludedKeys = if (s.excludedKeys != null) {
           Util.intersect(s.excludedKeys, keysInThisChain)
         } else null
-        current = new Val.Obj(
-          s.pos,
-          s.getValue0,
-          false,
-          s.triggerAsserts,
-          current,
-          null,
-          null,
-          filteredExcludedKeys
-        )
+        // Preserve optimized storage to avoid LinkedHashMap creation
+        if (s.singleFieldKey != null) {
+          current = new Val.Obj(
+            s.pos, null, false, s.triggerAsserts, current,
+            null, null, filteredExcludedKeys, null, null,
+            s.singleFieldKey, s.singleFieldMember
+          )
+        } else if (s.inlineFieldKeys != null) {
+          current = new Val.Obj(
+            s.pos, null, false, s.triggerAsserts, current,
+            null, null, filteredExcludedKeys, null, null,
+            null, null, s.inlineFieldKeys, s.inlineFieldMembers
+          )
+        } else {
+          current = new Val.Obj(
+            s.pos,
+            s.getValue0,
+            false,
+            s.triggerAsserts,
+            current,
+            null,
+            null,
+            filteredExcludedKeys
+          )
+        }
         i -= 1
       }
       current
@@ -764,6 +801,33 @@ object Val {
               mapping.put(key, false)
             }
           })
+      } else if (obj.singleFieldKey != null) {
+        // Single-field fast path: avoid getValue0/LinkedHashMap creation.
+        // For bench.02 (499 single-field objects in the super chain), this
+        // eliminates 499 LinkedHashMap allocations during key enumeration.
+        val k = obj.singleFieldKey
+        if (exclusionSet == null || !exclusionSet.contains(k)) {
+          val vis = obj.singleFieldMember.visibility
+          if (!mapping.containsKey(k)) mapping.put(k, vis == Visibility.Hidden)
+          else if (vis == Visibility.Hidden) mapping.put(k, true)
+          else if (vis == Visibility.Unhide) mapping.put(k, false)
+        }
+      } else if (obj.inlineFieldKeys != null) {
+        // Inline multi-field fast path: iterate arrays directly
+        val keys = obj.inlineFieldKeys
+        val members = obj.inlineFieldMembers
+        val n = keys.length
+        var i = 0
+        while (i < n) {
+          val k = keys(i)
+          if (exclusionSet == null || !exclusionSet.contains(k)) {
+            val vis = members(i).visibility
+            if (!mapping.containsKey(k)) mapping.put(k, vis == Visibility.Hidden)
+            else if (vis == Visibility.Hidden) mapping.put(k, true)
+            else if (vis == Visibility.Unhide) mapping.put(k, false)
+          }
+          i += 1
+        }
       } else {
         obj.getValue0.forEach { (k, m) =>
           if (exclusionSet == null || !exclusionSet.contains(k)) {
@@ -832,6 +896,7 @@ object Val {
 
     lazy val allKeyNames: Array[String] = {
       if (staticLayout != null && `super` == null) staticLayout.keys.clone()
+      else if (singleFieldKey != null && `super` == null) Array(singleFieldKey)
       else if (inlineFieldKeys != null && `super` == null) inlineFieldKeys.clone()
       else {
         val m = if (static || `super` != null) getAllKeys else getValue0
@@ -849,6 +914,10 @@ object Val {
     private def computeVisibleKeyNames(): Array[String] = {
       if (static) {
         allKeyNames
+      } else if (singleFieldKey != null && `super` == null) {
+        // Single-field fast path: avoid getValue0/LinkedHashMap creation
+        if (singleFieldMember.visibility == Visibility.Hidden) Array.empty[String]
+        else Array(singleFieldKey)
       } else if (inlineFieldKeys != null && `super` == null) {
         // Inline multi-field fast path: check if all visible (common case)
         val keys = inlineFieldKeys
