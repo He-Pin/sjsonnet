@@ -383,6 +383,16 @@ object Val {
       } else Int.MinValue
     }
 
+    /** Returns the number of leading range elements that are guaranteed equal
+      * between this array and `other`. When both arrays share the same rangeFrom,
+      * all shared range elements have identical values. Returns 0 if no bulk skip
+      * is possible. */
+    def sharedRangePrefix(other: Arr, maxLen: Int): Int = {
+      if (_rangePos != null && other._rangePos != null && rangeFrom == other.rangeFrom) {
+        math.min(math.min(rangeLen, other.rangeLen), maxLen)
+      } else 0
+    }
+
     def concat(newPos: Position, rhs: Arr): Arr = {
       val lArr = arr
       val rArr = rhs.arr

@@ -2038,7 +2038,8 @@ class Evaluator(
         val xLen = xa.length
         val yLen = ya.length
         val len = math.min(xLen, yLen)
-        var i = 0
+        // Bulk range skip: arrays from same range have identical prefix
+        var i = xa.sharedRangePrefix(ya, len)
         while (i < len) {
           // Fast path: both elements are unmaterialized range entries
           val rangeCmp = xa.tryCompareRangeElements(i, ya)
@@ -2084,7 +2085,8 @@ class Evaluator(
         case y: Val.Arr =>
           val xlen = x.length
           if (xlen != y.length) return false
-          var i = 0
+          // Bulk range skip: arrays from same range have identical prefix
+          var i = x.sharedRangePrefix(y, xlen)
           while (i < xlen) {
             val rangeCmp = x.tryCompareRangeElements(i, y)
             if (rangeCmp == Int.MinValue) {
