@@ -1598,6 +1598,55 @@ class Evaluator(
         e.isInstanceOf[Val.Literal]
     }
 
+  /** Fast path for canEagerEval using cached maxValidIdIdx on Member.Field.
+    * Avoids recursive expression tree walk on every object creation by caching
+    * the structural analysis result on the AST node. */
+  private def canEagerEvalCached(field: Member.Field, scopeLen: Int): Boolean = {
+    var maxIdx = field.eagerEvalMaxIdx
+    if (maxIdx == -2) {
+      maxIdx = computeMaxValidIdIdx(field.rhs)
+      field.eagerEvalMaxIdx = maxIdx
+    }
+    maxIdx >= -1 && scopeLen > maxIdx
+  }
+
+  /** Compute the maximum ValidId.nameIdx referenced by an expression.
+    * Returns -1 if the expression has no ValidId references (pure literal/constant).
+    * Returns Int.MinValue if the expression is not structurally eligible for eager eval. */
+  private def computeMaxValidIdIdx(e: Expr): Int =
+    (e.tag: @scala.annotation.switch) match {
+      case ExprTags.ValidId => e.asInstanceOf[ValidId].nameIdx
+      case ExprTags.BinaryOp =>
+        val b = e.asInstanceOf[Expr.BinaryOp]
+        val l = computeMaxValidIdIdx(b.lhs)
+        if (l == Int.MinValue) Int.MinValue
+        else { val r = computeMaxValidIdIdx(b.rhs); if (r == Int.MinValue) Int.MinValue else math.max(l, r) }
+      case ExprTags.UnaryOp => computeMaxValidIdIdx(e.asInstanceOf[Expr.UnaryOp].value)
+      case ExprTags.Select => computeMaxValidIdIdx(e.asInstanceOf[Expr.Select].value)
+      case ExprTags.And =>
+        val a = e.asInstanceOf[Expr.And]
+        val l = computeMaxValidIdIdx(a.lhs)
+        if (l == Int.MinValue) Int.MinValue
+        else { val r = computeMaxValidIdIdx(a.rhs); if (r == Int.MinValue) Int.MinValue else math.max(l, r) }
+      case ExprTags.Or =>
+        val o = e.asInstanceOf[Expr.Or]
+        val l = computeMaxValidIdIdx(o.lhs)
+        if (l == Int.MinValue) Int.MinValue
+        else { val r = computeMaxValidIdIdx(o.rhs); if (r == Int.MinValue) Int.MinValue else math.max(l, r) }
+      case ExprTags.IfElse =>
+        val ie = e.asInstanceOf[Expr.IfElse]
+        val c = computeMaxValidIdIdx(ie.cond)
+        if (c == Int.MinValue) Int.MinValue
+        else {
+          val t = computeMaxValidIdIdx(ie.`then`)
+          if (t == Int.MinValue) Int.MinValue
+          else if (ie.`else` == null) math.max(c, t)
+          else { val el = computeMaxValidIdIdx(ie.`else`); if (el == Int.MinValue) Int.MinValue else math.max(c, math.max(t, el)) }
+        }
+      case _ =>
+        if (e.isInstanceOf[Val.Literal]) -1 else Int.MinValue
+    }
+
   def visitMemberList(objPos: Position, e: ObjBody.MemberList, sup: Val.Obj)(implicit
       scope: ValScope): Val.Obj = {
     val asserts = e.asserts
@@ -1651,7 +1700,7 @@ class Evaluator(
                   case v: Val => v
                   case _      => null
                 }
-              case _ if e.binds == null && canEagerEval(rhs, scope.length) =>
+              case _ if e.binds == null && canEagerEvalCached(field, scope.length) =>
                 // Field body doesn't reference new object's self/super and has
                 // no local binds. Safe to evaluate eagerly, avoiding deferred
                 // Member closure allocation + scope copy at access time.
@@ -1737,7 +1786,8 @@ class Evaluator(
       var canInline = true
       var fi = 0
       while (canInline && fi < n) {
-        fields(fi) match {
+        val field = fields(fi)
+        field match {
           case Member.Field(offset, fieldName, plus, null, sep, rhs) =>
             val k = visitFieldName(fieldName, offset)
             if (k == null) {
@@ -1763,7 +1813,7 @@ class Evaluator(
                     case v: Val => v
                     case _      => null
                   }
-                case _ if e.binds == null && canEagerEval(rhs, scope.length) =>
+                case _ if e.binds == null && canEagerEvalCached(field, scope.length) =>
                   try visitExpr(rhs) catch { case _: Throwable => null }
                 case _ => null
               }
@@ -1825,7 +1875,7 @@ class Evaluator(
 
     val builder = Util.preSizedJavaLinkedHashMap[String, Val.Obj.Member](fields.length)
     fields.foreach {
-      case Member.Field(offset, fieldName, plus, null, sep, rhs) =>
+      case f @ Member.Field(offset, fieldName, plus, null, sep, rhs) =>
         val k = visitFieldName(fieldName, offset)
         if (k != null) {
           val fieldKey = k
@@ -1837,7 +1887,7 @@ class Evaluator(
                 case v: Val => v
                 case _      => null
               }
-            case _ if e.binds == null && canEagerEval(rhs, scope.length) =>
+            case _ if e.binds == null && canEagerEvalCached(f, scope.length) =>
               try visitExpr(rhs) catch { case _: Throwable => null }
             case _ => null
           }

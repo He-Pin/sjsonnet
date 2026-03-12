@@ -126,6 +126,10 @@ object Expr {
       def isStatic: Boolean = fieldName
         .isInstanceOf[FieldName.Fixed] && !plus && args == null && sep == Visibility.Normal && rhs
         .isInstanceOf[Val.Literal]
+
+      // Cached eager eval analysis result for rhs. Computed lazily, thread-safe via benign races.
+      // -2 = not computed, -1 = not structurally eligible, >=0 = max ValidId.nameIdx in rhs
+      @transient @volatile var eagerEvalMaxIdx: Int = -2
     }
     final case class AssertStmt(value: Expr, msg: Expr) extends Member
   }
