@@ -104,6 +104,23 @@ object StringModule extends AbstractFunctionModule {
   }
 
   private object StripUtils {
+    /** Try to build a 128-bit bitset from a pure-ASCII chars string.
+      * Returns null if any char is non-ASCII. Avoids scala.collection.Set allocation. */
+    private def tryAsciiBitSet(charsStr: String): Array[Long] = {
+      val bits = new Array[Long](2)
+      var i = 0
+      while (i < charsStr.length) {
+        val c = charsStr.charAt(i).toInt
+        if (c >= 128) return null
+        bits(c >> 6) |= (1L << (c & 63))
+        i += 1
+      }
+      bits
+    }
+
+    @inline private def bitSetContains(bits: Array[Long], cp: Int): Boolean =
+      cp < 128 && (bits(cp >> 6) & (1L << (cp & 63))) != 0
+
     def codePointsSet(str: String): collection.Set[Int] = {
       val chars = Set.newBuilder[Int]
       chars.sizeHint(str.codePointCount(0, str.length))
@@ -116,16 +133,33 @@ object StringModule extends AbstractFunctionModule {
       chars.result()
     }
 
-    def unspecializedStrip(
+    /** Fast strip using ASCII bitset — no Set[Int] allocation, no codePoint overhead. */
+    def strip(str: String, charsStr: String, left: Boolean, right: Boolean): String = {
+      if (str.isEmpty) return str
+      val bits = tryAsciiBitSet(charsStr)
+      if (bits != null) asciiStrip(str, bits, left, right)
+      else {
+        val charsSet = codePointsSet(charsStr)
+        generalStrip(str, charsSet, left, right)
+      }
+    }
+
+    /** Overload accepting a pre-built Set[Int] for non-ASCII char sets (e.g. trim). */
+    def strip(
         str: String,
         charsSet: collection.Set[Int],
         left: Boolean,
         right: Boolean): String = {
       if (str.isEmpty) return str
+      generalStrip(str, charsSet, left, right)
+    }
+
+    private def generalStrip(
+        str: String,
+        charsSet: collection.Set[Int],
+        left: Boolean,
+        right: Boolean): String = {
       var start = 0
-      // Use exclusive end position with codePointBefore() for right-to-left iteration.
-      // Unlike codePointAt(), codePointBefore() correctly reads surrogate pairs when
-      // scanning backwards (codePointAt on a low surrogate returns the wrong value).
       var end = str.length
 
       while (left && start < end && charsSet.contains(str.codePointAt(start))) {
@@ -137,49 +171,55 @@ object StringModule extends AbstractFunctionModule {
       }
       str.substring(start, end)
     }
+
+    /** Fast path: all chars-to-strip are ASCII. Uses charAt + bitset instead of
+      * codePointAt + offsetByCodePoints. */
+    private def asciiStrip(
+        str: String,
+        bits: Array[Long],
+        left: Boolean,
+        right: Boolean): String = {
+      var start = 0
+      var end = str.length
+
+      if (left) {
+        while (start < end && bitSetContains(bits, str.charAt(start).toInt)) {
+          start += 1
+        }
+      }
+
+      if (right) {
+        while (end > start && bitSetContains(bits, str.charAt(end - 1).toInt)) {
+          end -= 1
+        }
+      }
+      str.substring(start, end)
+    }
   }
 
   private object StripChars extends Val.Builtin2("stripChars", "str", "chars") {
     def evalRhs(str: Eval, chars: Eval, ev: EvalScope, pos: Position): Val = {
-      val charsSet = StripUtils.codePointsSet(chars.value.asString)
       Val.Str(
         pos,
-        StripUtils.unspecializedStrip(
-          str.value.asString,
-          charsSet,
-          left = true,
-          right = true
-        )
+        StripUtils.strip(str.value.asString, chars.value.asString, left = true, right = true)
       )
     }
   }
 
   private object LStripChars extends Val.Builtin2("lstripChars", "str", "chars") {
     def evalRhs(str: Eval, chars: Eval, ev: EvalScope, pos: Position): Val = {
-      val charsSet = StripUtils.codePointsSet(chars.value.asString)
       Val.Str(
         pos,
-        StripUtils.unspecializedStrip(
-          str.value.asString,
-          charsSet,
-          left = true,
-          right = false
-        )
+        StripUtils.strip(str.value.asString, chars.value.asString, left = true, right = false)
       )
     }
   }
 
   private object RStripChars extends Val.Builtin2("rstripChars", "str", "chars") {
     def evalRhs(str: Eval, chars: Eval, ev: EvalScope, pos: Position): Val = {
-      val charsSet = StripUtils.codePointsSet(chars.value.asString)
       Val.Str(
         pos,
-        StripUtils.unspecializedStrip(
-          str.value.asString,
-          charsSet,
-          left = false,
-          right = true
-        )
+        StripUtils.strip(str.value.asString, chars.value.asString, left = false, right = true)
       )
     }
   }
@@ -460,7 +500,7 @@ object StringModule extends AbstractFunctionModule {
       str.isEmpty
     },
     builtin("trim", "str") { (_, _, str: String) =>
-      StripUtils.unspecializedStrip(str, whiteSpaces, true, true)
+      StripUtils.strip(str, whiteSpaces, true, true)
     },
     builtin("equalsIgnoreCase", "str1", "str2") { (_, _, str1: String, str2: String) =>
       str1.equalsIgnoreCase(str2)
