@@ -135,9 +135,10 @@ abstract class Materializer {
       depth: Int,
       ctx: Materializer.MaterializeContext)(implicit evaluator: EvalScope): T = {
     storePos(xs.pos)
-    val av = visitor.visitArray(xs.length, -1)
+    val len = xs.length
+    val av = visitor.visitArray(len, -1)
     var i = 0
-    while (i < xs.length) {
+    while (i < len) {
       val childVal = xs.value(i)
       av.visitValue(
         materializeRecursiveChild(childVal, av.subVisitor.asInstanceOf[Visitor[T, T]], depth, ctx),
@@ -153,52 +154,53 @@ abstract class Materializer {
       childVisitor: Visitor[T, T],
       depth: Int,
       ctx: Materializer.MaterializeContext)(implicit evaluator: EvalScope): T = {
-    val vt = childVal.valTag
-    if (vt == Val.TAG_STR) {
-      val s = childVal.asInstanceOf[Val.Str]
-      storePos(s.pos); childVisitor.visitString(s.str, -1)
-    } else if (vt == Val.TAG_OBJ) {
-      val obj = childVal.asInstanceOf[Val.Obj]
-      val nextDepth = depth + 1
-      if (nextDepth < ctx.recursiveDepthLimit)
-        materializeRecursiveObj(obj, childVisitor, nextDepth, ctx)
-      else
-        materializeStackless(childVal, childVisitor, ctx)
-    } else if (vt == Val.TAG_NUM) {
-      storePos(childVal.pos); childVisitor.visitFloat64(childVal.asDouble, -1)
-    } else if (vt == Val.TAG_ARR) {
-      val xs = childVal.asInstanceOf[Val.Arr]
-      val nextDepth = depth + 1
-      if (nextDepth < ctx.recursiveDepthLimit)
-        materializeRecursiveArr(xs, childVisitor, nextDepth, ctx)
-      else
-        materializeStackless(childVal, childVisitor, ctx)
-    } else if (vt == Val.TAG_TRUE) {
-      storePos(childVal.pos); childVisitor.visitTrue(-1)
-    } else if (vt == Val.TAG_FALSE) {
-      storePos(childVal.pos); childVisitor.visitFalse(-1)
-    } else if (vt == Val.TAG_NULL) {
-      storePos(childVal.pos); childVisitor.visitNull(-1)
-    } else {
-      childVal match {
-        case s: Val.Func =>
-          Error.fail(
-            "Couldn't manifest function with params [" + s.params.names.mkString(",") + "]",
-            childVal.pos
-          )
-        case mat: Materializer.Materializable => storePos(childVal.pos); mat.materialize(childVisitor)
-        case tc: TailCall =>
-          Error.fail(
-            "Internal error: TailCall sentinel leaked into materialization. " +
-            "This indicates a bug in the TCO protocol — a TailCall was not resolved before " +
-            "reaching the Materializer.",
-            tc.pos
-          )
-        case vv: Val =>
-          Error.fail("Unknown value type " + vv.prettyName, vv.pos)
-        case null =>
-          Error.fail("Unknown value type " + childVal)
-      }
+    val vt: Int = childVal.valTag.toInt
+    (vt: @scala.annotation.switch) match {
+      case 0 => // TAG_STR
+        val s = childVal.asInstanceOf[Val.Str]
+        storePos(s.pos); childVisitor.visitString(s.str, -1)
+      case 6 => // TAG_OBJ
+        val obj = childVal.asInstanceOf[Val.Obj]
+        val nextDepth = depth + 1
+        if (nextDepth < ctx.recursiveDepthLimit)
+          materializeRecursiveObj(obj, childVisitor, nextDepth, ctx)
+        else
+          materializeStackless(childVal, childVisitor, ctx)
+      case 1 => // TAG_NUM
+        storePos(childVal.pos); childVisitor.visitFloat64(childVal.asDouble, -1)
+      case 5 => // TAG_ARR
+        val xs = childVal.asInstanceOf[Val.Arr]
+        val nextDepth = depth + 1
+        if (nextDepth < ctx.recursiveDepthLimit)
+          materializeRecursiveArr(xs, childVisitor, nextDepth, ctx)
+        else
+          materializeStackless(childVal, childVisitor, ctx)
+      case 2 => // TAG_TRUE
+        storePos(childVal.pos); childVisitor.visitTrue(-1)
+      case 3 => // TAG_FALSE
+        storePos(childVal.pos); childVisitor.visitFalse(-1)
+      case 4 => // TAG_NULL
+        storePos(childVal.pos); childVisitor.visitNull(-1)
+      case _ =>
+        childVal match {
+          case s: Val.Func =>
+            Error.fail(
+              "Couldn't manifest function with params [" + s.params.names.mkString(",") + "]",
+              childVal.pos
+            )
+          case mat: Materializer.Materializable => storePos(childVal.pos); mat.materialize(childVisitor)
+          case tc: TailCall =>
+            Error.fail(
+              "Internal error: TailCall sentinel leaked into materialization. " +
+              "This indicates a bug in the TCO protocol — a TailCall was not resolved before " +
+              "reaching the Materializer.",
+              tc.pos
+            )
+          case vv: Val =>
+            Error.fail("Unknown value type " + vv.prettyName, vv.pos)
+          case null =>
+            Error.fail("Unknown value type " + childVal)
+        }
     }
   }
 
