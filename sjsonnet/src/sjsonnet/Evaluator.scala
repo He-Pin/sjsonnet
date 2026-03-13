@@ -156,9 +156,43 @@ class Evaluator(
         new LazyExpr(e, scope, this)
       }
     case e =>
-      if (debugStats != null) debugStats.lazyCreated += 1
-      new LazyExpr(e, scope, this)
+      // Try eager evaluation for simple arithmetic (BinaryOp/UnaryOp with
+      // resolved operands). Delegates instanceof checks and try-catch to
+      // separate methods to keep this frame small for deep recursion.
+      val eager = tryEagerEval(e)
+      if (eager != null) eager
+      else {
+        if (debugStats != null) debugStats.lazyCreated += 1
+        new LazyExpr(e, scope, this)
+      }
   }
+
+  /** Attempt eager evaluation for BinaryOp/UnaryOp with immediately-resolvable
+   * operands. Returns null if the expression is not eligible or evaluation fails.
+   * Kept in a separate method to avoid enlarging visitAsLazy's bytecode frame. */
+  private def tryEagerEval(e: Expr)(implicit scope: ValScope): Val = e match {
+    case bo: BinaryOp =>
+      if (isImmediatelyResolvable(bo.lhs) && isImmediatelyResolvable(bo.rhs))
+        tryEvalCatch(bo)
+      else null
+    case uo: UnaryOp =>
+      if (isImmediatelyResolvable(uo.value)) tryEvalCatch(uo)
+      else null
+    case _ => null
+  }
+
+  /** Evaluate an expression, returning null on any exception (preserving lazy
+   * error semantics for unused arguments). */
+  private def tryEvalCatch(e: Expr)(implicit scope: ValScope): Val =
+    try visitExpr(e)
+    catch { case _: Exception => null }
+
+  @inline private def isImmediatelyResolvable(e: Expr)(implicit scope: ValScope): Boolean =
+    e match {
+      case _: Val     => true
+      case v: ValidId => v.nameIdx < scope.length && scope.bindings(v.nameIdx) != null
+      case _          => false
+    }
 
   def visitValidId(e: ValidId)(implicit scope: ValScope): Val = {
     val ref = scope.bindings(e.nameIdx)
