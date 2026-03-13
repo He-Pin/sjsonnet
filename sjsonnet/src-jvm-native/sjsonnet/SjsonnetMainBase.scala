@@ -170,7 +170,8 @@ object SjsonnetMainBase {
         warn,
         std,
         debugStats = debugStats,
-        profileOpt = config.profile
+        profileOpt = config.profile,
+        stdout = if (config.outputFile.isEmpty) stdout else null
       )
       res <- {
         if (hasWarnings && config.fatalWarnings.value) Left("")
@@ -236,9 +237,22 @@ object SjsonnetMainBase {
       )
     )
 
-  private def writeToFile(config: Config, wd: os.Path)(
+  private def writeToFile(config: Config, wd: os.Path, stdout: PrintStream = null)(
       materialize: Writer => Either[String, ?]): Either[String, String] = {
     config.outputFile match {
+      case None if stdout != null =>
+        // Direct-write mode: bypass StringWriter/StringBuffer allocation entirely.
+        // For large outputs (comparison2: 2.6MB, realistic2: 28MB) this eliminates
+        // ~3x output-size of intermediate char[] allocations from StringBuffer growth.
+        val buf = new BufferedOutputStream(stdout, 65536)
+        val wr = new OutputStreamWriter(buf, StandardCharsets.UTF_8)
+        val u = materialize(wr)
+        u.map { _ =>
+          // Add trailing newline equivalent to main0's stdout.println(str)
+          if (!config.noTrailingNewline.value) wr.write('\n')
+          wr.flush()
+          ""
+        }
       case None =>
         val sw = new StringWriter
         materialize(sw).map(_ => sw.toString)
@@ -263,8 +277,9 @@ object SjsonnetMainBase {
       jsonnetCode: String,
       path: os.Path,
       wd: os.Path,
-      getCurrentPosition: () => Position) = {
-    writeToFile(config, wd) { writer =>
+      getCurrentPosition: () => Position,
+      stdout: PrintStream = null) = {
+    writeToFile(config, wd, stdout) { writer =>
       val renderer = rendererForConfig(writer, config, getCurrentPosition)
       val res = interp.interpret0(jsonnetCode, OsPath(path), renderer)
       if (config.yamlOut.value && !config.noTrailingNewline.value) writer.write('\n')
@@ -320,7 +335,8 @@ object SjsonnetMainBase {
       std: Val.Obj,
       evaluatorOverride: Option[Evaluator] = None,
       debugStats: DebugStats = null,
-      profileOpt: Option[String] = None): Either[String, String] = {
+      profileOpt: Option[String] = None,
+      stdout: PrintStream = null): Either[String, String] = {
 
     val (jsonnetCode, path) =
       if (config.exec.value) (file, wd / Util.wrapInLessThanGreaterThan("exec"))
@@ -430,7 +446,7 @@ object SjsonnetMainBase {
 
         interp.interpret(jsonnetCode, OsPath(path)).flatMap {
           case arr: ujson.Arr =>
-            writeToFile(config, wd) { writer =>
+            writeToFile(config, wd, stdout) { writer =>
               arr.value.toSeq match {
                 case Nil         => // donothing
                 case Seq(single) =>
@@ -454,9 +470,9 @@ object SjsonnetMainBase {
               Right("")
             }
 
-          case _ => renderNormal(config, interp, jsonnetCode, path, wd, () => currentPos)
+          case _ => renderNormal(config, interp, jsonnetCode, path, wd, () => currentPos, stdout)
         }
-      case _ => renderNormal(config, interp, jsonnetCode, path, wd, () => currentPos)
+      case _ => renderNormal(config, interp, jsonnetCode, path, wd, () => currentPos, stdout)
     }
 
     if (profilerInstance != null)
