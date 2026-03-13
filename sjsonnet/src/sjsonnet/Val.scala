@@ -575,6 +575,26 @@ object Val {
     /** Access static value by index (only valid when isStatic is true). */
     def staticValueAt(i: Int): Val = staticValues(i)
 
+    /**
+     * True if this object can be iterated directly via inline field arrays,
+     * bypassing the value() lookup chain (cache checks, valueRaw dispatch, key scan).
+     * Only safe when: no super chain, no excluded keys, and inline storage is present.
+     */
+    @inline private[sjsonnet] def canDirectIterate: Boolean =
+      `super` == null && excludedKeys == null && (singleFieldKey != null || inlineFieldKeys != null)
+
+    /** Raw inline field keys array (may be null). */
+    @inline private[sjsonnet] def inlineKeys: Array[String] = inlineFieldKeys
+
+    /** Raw inline field members array (may be null). */
+    @inline private[sjsonnet] def inlineMembers: Array[Obj.Member] = inlineFieldMembers
+
+    /** Single-field key (may be null). */
+    @inline private[sjsonnet] def singleKey: String = singleFieldKey
+
+    /** Single-field member (may be null). */
+    @inline private[sjsonnet] def singleMem: Obj.Member = singleFieldMember
+
     private def getValue0: util.LinkedHashMap[String, Obj.Member] = {
       if (value0 == null) {
         if (singleFieldKey != null) {

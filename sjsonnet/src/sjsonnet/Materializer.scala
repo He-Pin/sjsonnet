@@ -101,6 +101,8 @@ abstract class Materializer {
         i += 1
       }
       ov.visitEnd(-1)
+    } else if (!ctx.sort && obj.canDirectIterate) {
+      materializeInlineObj(obj, visitor, depth, ctx)
     } else {
       val keys =
         if (ctx.sort) obj.sortedVisibleKeyNames
@@ -126,6 +128,56 @@ abstract class Materializer {
         i += 1
       }
       ov.visitEnd(-1)
+    }
+  }
+
+  /** Direct iteration for inline objects without super chain.
+   * Bypasses value() lookup (cache checks, valueRaw dispatch, key scan),
+   * invoking members directly by array index. */
+  private def materializeInlineObj[T](
+      obj: Val.Obj,
+      visitor: Visitor[T, T],
+      depth: Int,
+      ctx: Materializer.MaterializeContext)(implicit evaluator: EvalScope): T = {
+    val fs = ctx.emptyPos.fileScope
+    val rawKeys = obj.inlineKeys
+    if (rawKeys != null) {
+      val rawMembers = obj.inlineMembers
+      val rawN = rawKeys.length
+      var visCount = 0
+      var i = 0
+      while (i < rawN) {
+        if (rawMembers(i).visibility != Visibility.Hidden) visCount += 1
+        i += 1
+      }
+      val ov = visitor.visitObject(visCount, jsonableKeys = true, -1)
+      i = 0
+      while (i < rawN) {
+        val m = rawMembers(i)
+        if (m.visibility != Visibility.Hidden) {
+          val childVal = m.invoke(obj, null, fs, evaluator)
+          storePos(childVal)
+          ov.visitKeyValue(ov.visitKey(-1).visitString(rawKeys(i), -1))
+          val sub = ov.subVisitor.asInstanceOf[Visitor[T, T]]
+          ov.visitValue(materializeRecursiveChild(childVal, sub, depth, ctx), -1)
+        }
+        i += 1
+      }
+      ov.visitEnd(-1)
+    } else {
+      // Single-field object
+      val sfm = obj.singleMem
+      if (sfm.visibility != Visibility.Hidden) {
+        val ov = visitor.visitObject(1, jsonableKeys = true, -1)
+        val childVal = sfm.invoke(obj, null, fs, evaluator)
+        storePos(childVal)
+        ov.visitKeyValue(ov.visitKey(-1).visitString(obj.singleKey, -1))
+        val sub = ov.subVisitor.asInstanceOf[Visitor[T, T]]
+        ov.visitValue(materializeRecursiveChild(childVal, sub, depth, ctx), -1)
+        ov.visitEnd(-1)
+      } else {
+        visitor.visitObject(0, jsonableKeys = true, -1).visitEnd(-1)
+      }
     }
   }
 
