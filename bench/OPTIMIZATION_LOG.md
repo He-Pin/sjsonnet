@@ -727,3 +727,17 @@
     - `bench.02`: `~32 → 31.4 ms/op` (-2%)
   - GC metrics for bench.03: count 381→234 (-38.6%), time 166ms→84ms (-49.4%)
 - Design: `Val.cachedNum(pos, d)` checks `d.toInt` in 0-255 and `i.toDouble == d` — branch-free for non-matching values. Safe because evaluator-created Val.Num pos is never mutated at runtime (only StaticOptimizer mutates pos, and it creates fresh instances).
+
+## Wave 38: eager evaluation for simple function arguments
+- Scope: Eagerly evaluate BinaryOp/UnaryOp function arguments when operands are immediately resolvable (Val literals or already-bound ValidId scope entries), falling back to lazy thunk on exception.
+- Outcome: **kept**.
+- Commit: `bdd4529e`
+- Validation:
+  - Tests: 246/246 passed (all suites)
+  - Full regression suite: 35/35 pass, no regressions
+  - Key improvement: bench.03 (fibonacci): `13.293 → 12.037 ms/op` (-9.4%, 3-fork)
+  - Eliminates ~242K LazyExpr allocations for simple arithmetic arguments (e.g. `fib(n-1) + fib(n-2)`)
+  - bench.02: 25.584 ± 0.837 (3-fork, NEUTRAL)
+  - base64DecodeBytes: 7.203 ± 0.069 (3-fork, NEUTRAL)
+- Design: `visitAsLazy` default case calls `tryEagerEval(e)` which checks `BinaryOp`/`UnaryOp` with `isImmediatelyResolvable` operands. `tryEvalCatch` wraps `visitExpr` in try-catch (preserves lazy error semantics). Key: instanceof checks and try-catch extracted into separate methods to prevent JIT frame bloat in the deep-recursion call chain.
+- Note: bench.07 StackOverflowError in 3-fork is a pre-existing baseline issue (verified by stashing changes and testing baseline — same SOE), not caused by this optimization.
