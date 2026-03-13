@@ -423,27 +423,84 @@ class Evaluator(
         val rhsIdx = binOp.rhs.asInstanceOf[ValidId].nameIdx
         val op = binOp.op
         val bpos = binOp.pos
-        var i = 0
-        while (i < outerArr.length) {
-          extBindings(outerSlot) = outerArr(i)
-          var j = 0
-          while (j < innerLazy.length) {
-            extBindings(innerSlot) = innerLazy(j)
-            val l = extBindings(lhsIdx).value
-            val r = extBindings(rhsIdx).value
-            l match {
-              case ln: Val.Num => r match {
-                case rn: Val.Num =>
-                  results += evalBinaryOpNumNum(op, ln, rn, bpos)
+        if (lhsIdx == outerSlot && rhsIdx == innerSlot) {
+          // Tight path: body = outerVar op innerVar.
+          // Hoist the outer value resolution and type check out of the inner loop,
+          // skip extBindings stores entirely — resolve values from arrays directly.
+          var i = 0
+          while (i < outerArr.length) {
+            val outerVal = outerArr(i).value
+            outerVal match {
+              case ln: Val.Num =>
+                var j = 0
+                while (j < innerLazy.length) {
+                  innerLazy(j).value match {
+                    case rn: Val.Num =>
+                      results += evalBinaryOpNumNum(op, ln, rn, bpos)
+                    case r =>
+                      results += visitBinaryOpValues(op, outerVal, r, bpos)
+                  }
+                  j += 1
+                }
+              case _ =>
+                var j = 0
+                while (j < innerLazy.length) {
+                  results += visitBinaryOpValues(op, outerVal, innerLazy(j).value, bpos)
+                  j += 1
+                }
+            }
+            i += 1
+          }
+        } else if (lhsIdx == innerSlot && rhsIdx == outerSlot) {
+          // Swapped: body = innerVar op outerVar
+          var i = 0
+          while (i < outerArr.length) {
+            val outerVal = outerArr(i).value
+            outerVal match {
+              case rn: Val.Num =>
+                var j = 0
+                while (j < innerLazy.length) {
+                  innerLazy(j).value match {
+                    case ln: Val.Num =>
+                      results += evalBinaryOpNumNum(op, ln, rn, bpos)
+                    case l =>
+                      results += visitBinaryOpValues(op, l, outerVal, bpos)
+                  }
+                  j += 1
+                }
+              case _ =>
+                var j = 0
+                while (j < innerLazy.length) {
+                  results += visitBinaryOpValues(op, innerLazy(j).value, outerVal, bpos)
+                  j += 1
+                }
+            }
+            i += 1
+          }
+        } else {
+          // Generic: operands reference captured or mixed variables — use extBindings
+          var i = 0
+          while (i < outerArr.length) {
+            extBindings(outerSlot) = outerArr(i)
+            var j = 0
+            while (j < innerLazy.length) {
+              extBindings(innerSlot) = innerLazy(j)
+              val l = extBindings(lhsIdx).value
+              val r = extBindings(rhsIdx).value
+              l match {
+                case ln: Val.Num => r match {
+                  case rn: Val.Num =>
+                    results += evalBinaryOpNumNum(op, ln, rn, bpos)
+                  case _ =>
+                    results += visitBinaryOpValues(op, l, r, bpos)
+                }
                 case _ =>
                   results += visitBinaryOpValues(op, l, r, bpos)
               }
-              case _ =>
-                results += visitBinaryOpValues(op, l, r, bpos)
+              j += 1
             }
-            j += 1
+            i += 1
           }
-          i += 1
         }
       case _ =>
         var i = 0
