@@ -101,27 +101,19 @@ abstract class Materializer {
         i += 1
       }
       ov.visitEnd(-1)
-    } else if (!ctx.sort && obj.canDirectIterate) {
-      materializeInlineObj(obj, visitor, depth, ctx)
+    } else if (obj.canDirectIterate) {
+      if (ctx.sort) materializeSortedInlineObj(obj, visitor, depth, ctx)
+      else materializeInlineObj(obj, visitor, depth, ctx)
     } else {
       val keys =
         if (ctx.sort) obj.sortedVisibleKeyNames
         else obj.visibleKeyNames
       val ov = visitor.visitObject(keys.length, jsonableKeys = true, -1)
       var i = 0
-      var prevKey: String = null
       while (i < keys.length) {
         val key = keys(i)
         val childVal = obj.value(key, ctx.emptyPos)
         storePos(childVal)
-        if (ctx.sort) {
-          if (prevKey != null && Util.compareStringsByCodepoint(key, prevKey) <= 0)
-            Error.fail(
-              s"""Internal error: Unexpected key "$key" after "$prevKey" in sorted object materialization""",
-              childVal.pos
-            )
-          prevKey = key
-        }
         ov.visitKeyValue(ov.visitKey(-1).visitString(key, -1))
         val sub = ov.subVisitor.asInstanceOf[Visitor[T, T]]
         ov.visitValue(materializeRecursiveChild(childVal, sub, depth, ctx), -1)
@@ -166,6 +158,80 @@ abstract class Materializer {
       ov.visitEnd(-1)
     } else {
       // Single-field object
+      val sfm = obj.singleMem
+      if (sfm.visibility != Visibility.Hidden) {
+        val ov = visitor.visitObject(1, jsonableKeys = true, -1)
+        val childVal = sfm.invoke(obj, null, fs, evaluator)
+        storePos(childVal)
+        ov.visitKeyValue(ov.visitKey(-1).visitString(obj.singleKey, -1))
+        val sub = ov.subVisitor.asInstanceOf[Visitor[T, T]]
+        ov.visitValue(materializeRecursiveChild(childVal, sub, depth, ctx), -1)
+        ov.visitEnd(-1)
+      } else {
+        visitor.visitObject(0, jsonableKeys = true, -1).visitEnd(-1)
+      }
+    }
+  }
+
+  /** Sorted direct iteration for inline objects.
+   * Computes sorted field indices via insertion sort (optimal for 2-8 fields),
+   * then iterates via direct member invocation in sorted key order.
+   * Avoids: sortedVisibleKeyNames lazy val, value() linear scan, validation check. */
+  private def materializeSortedInlineObj[T](
+      obj: Val.Obj,
+      visitor: Visitor[T, T],
+      depth: Int,
+      ctx: Materializer.MaterializeContext)(implicit evaluator: EvalScope): T = {
+    val fs = ctx.emptyPos.fileScope
+    val rawKeys = obj.inlineKeys
+    if (rawKeys != null) {
+      val rawMembers = obj.inlineMembers
+      val rawN = rawKeys.length
+      // Build sorted index array of visible fields
+      var visCount = 0
+      var i = 0
+      while (i < rawN) {
+        if (rawMembers(i).visibility != Visibility.Hidden) visCount += 1
+        i += 1
+      }
+      val order = new Array[Int](visCount)
+      i = 0
+      var k = 0
+      while (i < rawN) {
+        if (rawMembers(i).visibility != Visibility.Hidden) {
+          order(k) = i
+          k += 1
+        }
+        i += 1
+      }
+      // Insertion sort by key name (optimal for small arrays)
+      i = 1
+      while (i < visCount) {
+        val pivotIdx = order(i)
+        val pivotKey = rawKeys(pivotIdx)
+        var j = i - 1
+        while (j >= 0 && Util.compareStringsByCodepoint(rawKeys(order(j)), pivotKey) > 0) {
+          order(j + 1) = order(j)
+          j -= 1
+        }
+        order(j + 1) = pivotIdx
+        i += 1
+      }
+      // Iterate in sorted order with direct member invocation
+      val ov = visitor.visitObject(visCount, jsonableKeys = true, -1)
+      i = 0
+      while (i < visCount) {
+        val idx = order(i)
+        val childVal = rawMembers(idx).invoke(obj, null, fs, evaluator)
+        storePos(childVal)
+        ov.visitKeyValue(ov.visitKey(-1).visitString(rawKeys(idx), -1))
+        val sub = ov.subVisitor.asInstanceOf[Visitor[T, T]]
+        ov.visitValue(materializeRecursiveChild(childVal, sub, depth, ctx), -1)
+        i += 1
+      }
+      ov.visitEnd(-1)
+    } else {
+      // Single-field object: sorting is trivial (same as unsorted)
       val sfm = obj.singleMem
       if (sfm.visibility != Visibility.Hidden) {
         val ov = visitor.visitObject(1, jsonableKeys = true, -1)
