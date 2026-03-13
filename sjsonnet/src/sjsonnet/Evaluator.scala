@@ -172,6 +172,15 @@ class Evaluator(
    * Kept in a separate method to avoid enlarging visitAsLazy's bytecode frame. */
   private def tryEagerEval(e: Expr)(implicit scope: ValScope): Val = e match {
     case bo: BinaryOp =>
+      // Inline fast path for ValidId/Val.Num arithmetic — avoids the full
+      // visitExpr → visitBinaryOp → visitBinaryOpAsDouble → visitExprAsDouble dispatch chain
+      // and the try/catch in tryEvalCatch.  Covers the fibonacci hot path (n-1, n-2).
+      val lDouble = resolveAsDouble(bo.lhs)
+      if (!lDouble.isNaN) {
+        val rDouble = resolveAsDouble(bo.rhs)
+        if (!rDouble.isNaN)
+          return tryInlineArith(bo.op, lDouble, rDouble, bo.pos)
+      }
       if (isImmediatelyResolvable(bo.lhs) && isImmediatelyResolvable(bo.rhs))
         tryEvalCatch(bo)
       else null
@@ -180,6 +189,35 @@ class Evaluator(
       else null
     case _ => null
   }
+
+  /** Resolve an expression to a double without full visitExpr dispatch.
+   * Returns NaN as sentinel when the expression can't be directly resolved to a number. */
+  @inline private def resolveAsDouble(e: Expr)(implicit scope: ValScope): Double = e match {
+    case n: Val.Num => n.rawDouble
+    case v: ValidId =>
+      val idx = v.nameIdx
+      if (idx < scope.length) {
+        val binding = scope.bindings(idx)
+        if (binding != null) binding.value match {
+          case n: Val.Num => n.rawDouble
+          case _          => Double.NaN
+        } else Double.NaN
+      } else Double.NaN
+    case _ => Double.NaN
+  }
+
+  /** Perform inline arithmetic, returning null on overflow or unsupported op.
+   * Returning null falls through to LazyExpr which preserves error semantics. */
+  @inline private def tryInlineArith(op: Int, ld: Double, rd: Double, pos: Position): Val =
+    (op: @switch) match {
+      case Expr.BinaryOp.OP_+ =>
+        val r = ld + rd; if (r.isInfinite) null else Val.cachedNum(pos, r)
+      case Expr.BinaryOp.OP_- =>
+        val r = ld - rd; if (r.isInfinite) null else Val.cachedNum(pos, r)
+      case Expr.BinaryOp.OP_* =>
+        val r = ld * rd; if (r.isInfinite) null else Val.cachedNum(pos, r)
+      case _ => null // unsupported op — fall through to tryEvalCatch or LazyExpr
+    }
 
   /** Evaluate an expression, returning null on any exception (preserving lazy
    * error semantics for unused arguments). */
