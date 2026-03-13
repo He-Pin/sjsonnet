@@ -1960,6 +1960,13 @@ class Evaluator(
           null, null,
           finalKeys, finalMembers
         )
+        // Cache sorted field order on MemberList (shared across all objects)
+        var sortedOrder = e._cachedSortedOrder
+        if (sortedOrder == null && sup == null) {
+          sortedOrder = Materializer.computeSortedInlineOrder(finalKeys, finalMembers)
+          e._cachedSortedOrder = sortedOrder
+        }
+        if (sortedOrder != null) cachedObj._sortedInlineOrder = sortedOrder
         return cachedObj
       }
     }

@@ -595,6 +595,10 @@ object Val {
     /** Single-field member (may be null). */
     @inline private[sjsonnet] def singleMem: Obj.Member = singleFieldMember
 
+    /** Cached sorted field order for inline objects. Shared across all objects
+     * from the same MemberList to avoid per-object sort + allocation. */
+    @volatile private[sjsonnet] var _sortedInlineOrder: Array[Int] = null
+
     private def getValue0: util.LinkedHashMap[String, Obj.Member] = {
       if (value0 == null) {
         if (singleFieldKey != null) {

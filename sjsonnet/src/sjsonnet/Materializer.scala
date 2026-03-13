@@ -174,8 +174,8 @@ abstract class Materializer {
   }
 
   /** Sorted direct iteration for inline objects.
-   * Computes sorted field indices via insertion sort (optimal for 2-8 fields),
-   * then iterates via direct member invocation in sorted key order.
+   * Uses cached sorted field order when available (shared across all objects
+   * from the same MemberList), falling back to per-object computation.
    * Avoids: sortedVisibleKeyNames lazy val, value() linear scan, validation check. */
   private def materializeSortedInlineObj[T](
       obj: Val.Obj,
@@ -186,40 +186,16 @@ abstract class Materializer {
     val rawKeys = obj.inlineKeys
     if (rawKeys != null) {
       val rawMembers = obj.inlineMembers
-      val rawN = rawKeys.length
-      // Build sorted index array of visible fields
-      var visCount = 0
-      var i = 0
-      while (i < rawN) {
-        if (rawMembers(i).visibility != Visibility.Hidden) visCount += 1
-        i += 1
+      // Use cached sorted order if available, otherwise compute
+      val order = {
+        val cached = obj._sortedInlineOrder
+        if (cached != null) cached
+        else Materializer.computeSortedInlineOrder(rawKeys, rawMembers)
       }
-      val order = new Array[Int](visCount)
-      i = 0
-      var k = 0
-      while (i < rawN) {
-        if (rawMembers(i).visibility != Visibility.Hidden) {
-          order(k) = i
-          k += 1
-        }
-        i += 1
-      }
-      // Insertion sort by key name (optimal for small arrays)
-      i = 1
-      while (i < visCount) {
-        val pivotIdx = order(i)
-        val pivotKey = rawKeys(pivotIdx)
-        var j = i - 1
-        while (j >= 0 && Util.compareStringsByCodepoint(rawKeys(order(j)), pivotKey) > 0) {
-          order(j + 1) = order(j)
-          j -= 1
-        }
-        order(j + 1) = pivotIdx
-        i += 1
-      }
+      val visCount = order.length
       // Iterate in sorted order with direct member invocation
       val ov = visitor.visitObject(visCount, jsonableKeys = true, -1)
-      i = 0
+      var i = 0
       while (i < visCount) {
         val idx = order(i)
         val childVal = rawMembers(idx).invoke(obj, null, fs, evaluator)
@@ -555,6 +531,45 @@ object Materializer extends Materializer {
 
   final val emptyStringArray = new Array[String](0)
   final val emptyLazyArray = new Array[Eval](0)
+
+  /** Compute sorted field order for inline objects. Returns array of indices
+   * into the keys/members arrays, sorted by key name and excluding hidden fields.
+   * Used for both per-object computation and MemberList-level caching. */
+  private[sjsonnet] def computeSortedInlineOrder(
+      keys: Array[String],
+      members: Array[Val.Obj.Member]): Array[Int] = {
+    val n = keys.length
+    var visCount = 0
+    var i = 0
+    while (i < n) {
+      if (members(i).visibility != Visibility.Hidden) visCount += 1
+      i += 1
+    }
+    val order = new Array[Int](visCount)
+    i = 0
+    var k = 0
+    while (i < n) {
+      if (members(i).visibility != Visibility.Hidden) {
+        order(k) = i
+        k += 1
+      }
+      i += 1
+    }
+    // Insertion sort by key name (optimal for 2-8 elements)
+    i = 1
+    while (i < visCount) {
+      val pivotIdx = order(i)
+      val pivotKey = keys(pivotIdx)
+      var j = i - 1
+      while (j >= 0 && Util.compareStringsByCodepoint(keys(order(j)), pivotKey) > 0) {
+        order(j + 1) = order(j)
+        j -= 1
+      }
+      order(j + 1) = pivotIdx
+      i += 1
+    }
+    order
+  }
 
   /**
    * Immutable snapshot of all settings needed during a single materialization pass. Created once
