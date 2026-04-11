@@ -663,21 +663,21 @@ class Evaluator(
     val ld = ln.asDouble
     val rd = rn.asDouble
     (op: @switch) match {
-      case Expr.BinaryOp.OP_+ => Val.Num(pos, ld + rd)
+      case Expr.BinaryOp.OP_+ => Val.cachedNum(pos, ld + rd)
       case Expr.BinaryOp.OP_- =>
         val r = ld - rd
         if (r.isInfinite) Error.fail("overflow", pos)
-        Val.Num(pos, r)
+        Val.cachedNum(pos, r)
       case Expr.BinaryOp.OP_* =>
         val r = ld * rd
         if (r.isInfinite) Error.fail("overflow", pos)
-        Val.Num(pos, r)
+        Val.cachedNum(pos, r)
       case Expr.BinaryOp.OP_/ =>
         if (rd == 0) Error.fail("division by zero", pos)
         val r = ld / rd
         if (r.isInfinite) Error.fail("overflow", pos)
-        Val.Num(pos, r)
-      case Expr.BinaryOp.OP_% => Val.Num(pos, ld % rd)
+        Val.cachedNum(pos, r)
+      case Expr.BinaryOp.OP_% => Val.cachedNum(pos, ld % rd)
       // Use position-free static singletons for boolean results — this method is only called
       // from comprehension fast paths where position info on boolean results is unnecessary.
       // Avoids 1 object allocation per comparison in inner loops (significant for 1M+ iterations).
@@ -692,17 +692,17 @@ class Evaluator(
         if (rr < 0) Error.fail("shift by negative exponent", pos)
         if (rr >= 1 && math.abs(ll) >= (1L << (63 - rr)))
           Error.fail("numeric value outside safe integer range for bitwise operation", pos)
-        Val.Num(pos, (ll << rr).toDouble)
+        Val.cachedNum(pos, (ll << rr).toDouble)
       case Expr.BinaryOp.OP_>> =>
         val ll = ld.toSafeLong(pos); val rr = rd.toSafeLong(pos)
         if (rr < 0) Error.fail("shift by negative exponent", pos)
-        Val.Num(pos, (ll >> rr).toDouble)
+        Val.cachedNum(pos, (ll >> rr).toDouble)
       case Expr.BinaryOp.OP_& =>
-        Val.Num(pos, (ld.toSafeLong(pos) & rd.toSafeLong(pos)).toDouble)
+        Val.cachedNum(pos, (ld.toSafeLong(pos) & rd.toSafeLong(pos)).toDouble)
       case Expr.BinaryOp.OP_^ =>
-        Val.Num(pos, (ld.toSafeLong(pos) ^ rd.toSafeLong(pos)).toDouble)
+        Val.cachedNum(pos, (ld.toSafeLong(pos) ^ rd.toSafeLong(pos)).toDouble)
       case Expr.BinaryOp.OP_| =>
-        Val.Num(pos, (ld.toSafeLong(pos) | rd.toSafeLong(pos)).toDouble)
+        Val.cachedNum(pos, (ld.toSafeLong(pos) | rd.toSafeLong(pos)).toDouble)
       case _ =>
         // Should be unreachable: caller filters to ops 0-16 except OP_in
         throw new AssertionError(s"Unexpected numeric binary op: $op")
@@ -1176,7 +1176,7 @@ class Evaluator(
         .resolveAndReadOrFail(e.value, e.pos, binaryData = true)
         ._2
         .readRawBytes()
-        .map(x => Val.Num(e.pos, (x & 0xff).doubleValue))
+        .map(x => Val.cachedNum(e.pos, (x & 0xff).doubleValue))
     )
   }
 
@@ -1908,7 +1908,10 @@ class Evaluator(
     case (x: Val.Str, y: Val.Str) => Util.compareStringsByCodepoint(x.str, y.str)
     case (x: Val.Arr, y: Val.Arr) =>
       val len = math.min(x.length, y.length)
-      var i = 0
+      // Skip shared prefix for ConcatView arrays (e.g., big_array + [x] < big_array + [y]).
+      // When both arrays are O(1) concat views sharing the same left array, we can jump
+      // past the entire shared prefix — turning O(n) comparison into O(suffix_len).
+      var i = x.sharedConcatPrefixLength(y)
       while (i < len) {
         val xi = x.value(i)
         val yi = y.value(i)
@@ -1953,7 +1956,8 @@ class Evaluator(
         case y: Val.Arr =>
           val xlen = x.length
           if (xlen != y.length) return false
-          var i = 0
+          // Skip shared prefix for ConcatView arrays — see compare() for details
+          var i = x.sharedConcatPrefixLength(y)
           while (i < xlen) {
             if (!equal(x.value(i), y.value(i))) return false
             i += 1
