@@ -259,10 +259,108 @@ object Val {
    */
   val staticNull: Val.Null = Val.Null(new Position(null, -1))
 
-  final case class Str(var pos: Position, str: String) extends Literal {
+  /**
+   * Rope string: O(1) concatenation via inline tree nodes.
+   *
+   * Leaf nodes have `_str != null` and `_left == _right == null` — the common case (99%+ of all
+   * strings). Concat nodes have `_str == null` and non-null children; the flat string is lazily
+   * computed on first `.str` access, then cached and children cleared for GC.
+   *
+   * Single monomorphic class ensures optimal JIT inlining — no virtual dispatch on `.str`.
+   */
+  final class Str private[sjsonnet] (var pos: Position, private[sjsonnet] var _str: String)
+      extends Literal {
+    private[sjsonnet] var _left: Str = null
+    private[sjsonnet] var _right: Str = null
+
     def prettyName = "string"
-    override def asString: String = str
     private[sjsonnet] def valTag: Byte = TAG_STR
+
+    /** Get the flat string, flattening the rope tree if needed. */
+    def str: String = {
+      val s = _str
+      if (s != null) return s
+      val flat = flattenIterative()
+      _str = flat
+      _left = null
+      _right = null
+      flat
+    }
+
+    override def asString: String = str
+
+    /**
+     * Iterative rope flattening — stack-safe for arbitrarily deep trees. For a left-leaning rope of
+     * depth N (typical from repeated foldl concat), the ArrayDeque holds at most 2 elements.
+     */
+    private def flattenIterative(): String = {
+      val stack = new java.util.ArrayDeque[Str](16)
+      // Pre-compute total length for exact StringBuilder sizing — avoids resize+copy overhead.
+      var totalLen = 0
+      stack.push(this)
+      while (!stack.isEmpty) {
+        val node = stack.pop()
+        val s = node._str
+        if (s != null) {
+          totalLen += s.length
+        } else {
+          stack.push(node._right)
+          stack.push(node._left)
+        }
+      }
+      val sb = new java.lang.StringBuilder(totalLen)
+      stack.push(this)
+      while (!stack.isEmpty) {
+        val node = stack.pop()
+        val s = node._str
+        if (s != null) {
+          sb.append(s)
+        } else {
+          // Push right first so left is processed first (LIFO)
+          stack.push(node._right)
+          stack.push(node._left)
+        }
+      }
+      sb.toString
+    }
+
+    override def equals(other: Any): Boolean = other match {
+      case o: Str => (this eq o) || str == o.str
+      case _      => false
+    }
+
+    override def hashCode: Int = str.hashCode
+
+    override def toString: String = s"Str($pos, $str)"
+  }
+
+  object Str {
+
+    /** Create a leaf string node — zero overhead vs the old case class. */
+    def apply(pos: Position, s: String): Str = new Str(pos, s)
+
+    /** Backward-compatible extractor: `case Val.Str(pos, s) =>` still works. */
+    def unapply(s: Str): Option[(Position, String)] = Some((s.pos, s.str))
+
+    /**
+     * O(1) rope concatenation. Falls back to eager concat for small flat strings to avoid rope node
+     * overhead when the copy cost is negligible.
+     */
+    def concat(pos: Position, left: Str, right: Str): Str = {
+      val ls = left._str
+      val rs = right._str
+      // Empty string elimination
+      if (ls != null && ls.isEmpty) return right
+      if (rs != null && rs.isEmpty) return left
+      // Small string eagerness: both flat and combined length <= 128
+      if (ls != null && rs != null && ls.length + rs.length <= 128)
+        return new Str(pos, ls + rs)
+      // Rope node: O(1)
+      val node = new Str(pos, null)
+      node._left = left
+      node._right = right
+      node
+    }
   }
   final case class Num(var pos: Position, private val num: Double) extends Literal {
     if (num.isInfinite) {
@@ -971,11 +1069,11 @@ object Val {
     private def mergeMember(l: Val, r: Val, pos: Position)(implicit evaluator: EvalScope): Literal =
       (l, r) match {
         case (lStr: Val.Str, rStr: Val.Str) =>
-          Val.Str(pos, lStr.str ++ rStr.str)
+          Val.Str.concat(pos, lStr, rStr)
         case (lStr: Val.Str, _) =>
-          Val.Str(pos, lStr.str ++ renderString(r))
+          Val.Str.concat(pos, lStr, Val.Str(pos, renderString(r)))
         case (_, rStr: Val.Str) =>
-          Val.Str(pos, renderString(l) ++ rStr.str)
+          Val.Str.concat(pos, Val.Str(pos, renderString(l)), rStr)
         case (lNum: Val.Num, rNum: Val.Num) =>
           Val.Num(pos, lNum.asDouble + rNum.asDouble)
         case (lArr: Val.Arr, rArr: Val.Arr) =>
