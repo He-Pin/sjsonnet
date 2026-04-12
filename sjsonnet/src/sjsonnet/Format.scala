@@ -20,37 +20,186 @@ object Format {
   sealed trait CompiledFormat
 
   /**
-   * Pre-processed format string: arrays for indexed access, metadata for fast-path checks. Not a
-   * case class because Array fields have reference-based equals/hashCode.
+   * Pre-processed format string: primitive arrays for indexed access, metadata for fast-path
+   * checks. Not a case class because Array fields have reference-based equals/hashCode.
    */
   private[sjsonnet] final class RuntimeFormat(
       val leading: String,
-      val specs: Array[FormatSpec],
+      val specBits: Array[Long],
+      /** Null when the format contains no labels, otherwise one entry per spec. */
+      val labels: Array[String],
       val literals: Array[String],
       val hasAnyStar: Boolean,
-      val staticChars: Int)
+      val staticChars: Int,
+      /** Original format string for offset-based appends; null for legacy lowered formats. */
+      val source: String,
+      /** Char offsets into `source` for the leading literal: [start, end). */
+      val leadingStart: Int,
+      val leadingEnd: Int,
+      /** Char offsets into `source` for each literal following a format spec. */
+      val literalStarts: Array[Int],
+      val literalEnds: Array[Int],
+      /** Non-null when all simple named specs use the same label. */
+      val singleNamedLabel: String,
+      /**
+       * True when ALL specs are simple `%(key)s` with a named label and no formatting flags. In
+       * this case we can use a fast path that caches the object key lookup and avoids widenRaw
+       * entirely.
+       */
+      val allSimpleNamedString: Boolean)
       extends CompiledFormat
 
-  final case class FormatSpec(
-      label: Option[String],
-      alternate: Boolean,
-      zeroPadded: Boolean,
-      leftAdjusted: Boolean,
-      blankBeforePositive: Boolean,
-      signCharacter: Boolean,
-      width: Option[Int],
-      widthStar: Boolean,
-      precision: Option[Int],
-      precisionStar: Boolean,
-      conversion: Char) {
-    def updateWithStarValues(newWidth: Option[Int], newPrecision: Option[Int]): FormatSpec = {
-      this.copy(
-        width = newWidth.orElse(this.width),
-        widthStar = newWidth.isDefined || this.widthStar,
-        precision = newPrecision.orElse(this.precision),
-        precisionStar = newPrecision.isDefined || this.precisionStar
-      )
+  final class FormatSpec private (val bits: Long) extends AnyVal {
+    import FormatSpec._
+
+    def conversion: Char = (bits & ConversionMask).toChar
+    private def flags: Int = ((bits >>> FlagsShift) & FlagsMask).toInt
+
+    def hasLabel: Boolean = (flags & HasLabelFlag) != 0
+    def alternate: Boolean = (flags & AlternateFlag) != 0
+    def zeroPadded: Boolean = (flags & ZeroPaddedFlag) != 0
+    def leftAdjusted: Boolean = (flags & LeftAdjustedFlag) != 0
+    def blankBeforePositive: Boolean = (flags & BlankBeforePositiveFlag) != 0
+    def signCharacter: Boolean = (flags & SignCharacterFlag) != 0
+    def widthStar: Boolean = (flags & WidthStarFlag) != 0
+    def precisionStar: Boolean = (flags & PrecisionStarFlag) != 0
+
+    def widthValue: Int = decodeNumber((bits >>> WidthShift) & NumberMask)
+    def precisionValue: Int = decodeNumber((bits >>> PrecisionShift) & NumberMask)
+    def hasWidth: Boolean = widthValue != NoNumber
+    def hasPrecision: Boolean = precisionValue != NoNumber
+    def widthOr(default: Int): Int = {
+      val w = widthValue
+      if (w == NoNumber) default else w
     }
+    def precisionOr(default: Int): Int = {
+      val p = precisionValue
+      if (p == NoNumber) default else p
+    }
+
+    /** Compatibility helpers for the legacy fastparse parser path. Avoid these in hot loops. */
+    def width: Option[Int] = if (hasWidth) Some(widthValue) else None
+    def precision: Option[Int] = if (hasPrecision) Some(precisionValue) else None
+
+    /** True when this spec is a simple `%s` or `%(key)s` with no formatting flags. */
+    def isSimpleString: Boolean =
+      conversion == 's' && !hasWidth && !hasPrecision &&
+      (flags & SimpleStringDisqualifierFlags) == 0
+
+    def withStarWidth(newWidth: Int): FormatSpec =
+      new FormatSpec((bits & ~(NumberMask << WidthShift)) | (encodeNumber(newWidth) << WidthShift))
+
+    def withStarPrecision(newPrecision: Int): FormatSpec =
+      new FormatSpec(
+        (bits & ~(NumberMask << PrecisionShift)) | (encodeNumber(newPrecision) << PrecisionShift)
+      )
+
+    def withStarValues(newWidth: Int, newPrecision: Int): FormatSpec =
+      withStarWidth(newWidth).withStarPrecision(newPrecision)
+  }
+
+  object FormatSpec {
+    private val ConversionMask = 0xffL
+    private val FlagsShift = 8
+    private val FlagsMask = 0xffL
+    private val WidthShift = 16
+    private val PrecisionShift = 40
+    private val NumberMask = 0xffffffL
+    private val NumberBias = 1 << 23
+    private val EncodedNoNumber = NumberMask
+    private val MinNumber = -NumberBias
+    private val MaxNumber = NumberBias - 2
+
+    private val AlternateFlag = 1
+    private val ZeroPaddedFlag = 1 << 1
+    private val LeftAdjustedFlag = 1 << 2
+    private val BlankBeforePositiveFlag = 1 << 3
+    private val SignCharacterFlag = 1 << 4
+    private val WidthStarFlag = 1 << 5
+    private val PrecisionStarFlag = 1 << 6
+    private val HasLabelFlag = 1 << 7
+    private val SimpleStringDisqualifierFlags =
+      AlternateFlag | ZeroPaddedFlag | LeftAdjustedFlag | BlankBeforePositiveFlag |
+      SignCharacterFlag | WidthStarFlag | PrecisionStarFlag
+
+    final val NoNumber = Int.MinValue
+
+    private def encodeNumber(value: Int): Long = {
+      if (value == NoNumber) EncodedNoNumber
+      else if (value < MinNumber || value > MaxNumber) {
+        throw new Exception("Format width/precision is too large: " + value)
+      } else {
+        (value + NumberBias).toLong
+      }
+    }
+
+    private def decodeNumber(encoded: Long): Int =
+      if (encoded == EncodedNoNumber) NoNumber else encoded.toInt - NumberBias
+
+    private[sjsonnet] def appendNumberDigit(current: Int, digit: Int): Int = {
+      if (current > (MaxNumber - digit) / 10) {
+        throw new Exception("Format width/precision is too large")
+      }
+      current * 10 + digit
+    }
+
+    def fromBits(bits: Long): FormatSpec = new FormatSpec(bits)
+
+    def apply(
+        hasLabel: Boolean,
+        alternate: Boolean,
+        zeroPadded: Boolean,
+        leftAdjusted: Boolean,
+        blankBeforePositive: Boolean,
+        signCharacter: Boolean,
+        width: Int,
+        widthStar: Boolean,
+        precision: Int,
+        precisionStar: Boolean,
+        conversion: Char): FormatSpec = {
+      var flags = 0
+      if (hasLabel) flags |= HasLabelFlag
+      if (alternate) flags |= AlternateFlag
+      if (zeroPadded) flags |= ZeroPaddedFlag
+      if (leftAdjusted) flags |= LeftAdjustedFlag
+      if (blankBeforePositive) flags |= BlankBeforePositiveFlag
+      if (signCharacter) flags |= SignCharacterFlag
+      if (widthStar) flags |= WidthStarFlag
+      if (precisionStar) flags |= PrecisionStarFlag
+
+      val bits =
+        (conversion.toLong & ConversionMask) |
+        (flags.toLong << FlagsShift) |
+        (encodeNumber(width) << WidthShift) |
+        (encodeNumber(precision) << PrecisionShift)
+      new FormatSpec(bits)
+    }
+
+    def apply(
+        label: Option[String],
+        alternate: Boolean,
+        zeroPadded: Boolean,
+        leftAdjusted: Boolean,
+        blankBeforePositive: Boolean,
+        signCharacter: Boolean,
+        width: Option[Int],
+        widthStar: Boolean,
+        precision: Option[Int],
+        precisionStar: Boolean,
+        conversion: Char): FormatSpec =
+      apply(
+        label.isDefined,
+        alternate,
+        zeroPadded,
+        leftAdjusted,
+        blankBeforePositive,
+        signCharacter,
+        width.getOrElse(NoNumber),
+        widthStar,
+        precision.getOrElse(NoNumber),
+        precisionStar,
+        conversion
+      )
   }
   import fastparse._, NoWhitespace._
   def integer[$: P]: P[Unit] = P(CharIn("1-9") ~ CharsWhileIn("0-9", 0) | "0")
@@ -83,7 +232,7 @@ object Format {
   )
 
   def widenRaw(formatted: FormatSpec, txt: String): String =
-    if (formatted.width.isEmpty) txt // fast path: no width/padding needed
+    if (!formatted.hasWidth) txt // fast path: no width/padding needed
     else widen(formatted, "", "", txt, numeric = false, signedConversion = false)
   def widen(
       formatted: FormatSpec,
@@ -98,7 +247,7 @@ object Format {
       else if (signedConversion && formatted.signCharacter) "+" + lhs
       else lhs
 
-    val missingWidth = formatted.width.getOrElse(-1) - lhs2.length - mhs.length - rhs.length
+    val missingWidth = formatted.widthOr(-1) - lhs2.length - mhs.length - rhs.length
 
     if (missingWidth <= 0) {
       // Avoid unnecessary string concatenation when parts are empty
@@ -129,6 +278,15 @@ object Format {
     }
   }
 
+  private def sameRegion(s: String, start: Int, len: Int, value: String): Boolean = {
+    if (value.length != len) false
+    else {
+      var i = 0
+      while (i < len && s.charAt(start + i) == value.charAt(i)) i += 1
+      i == len
+    }
+  }
+
   /**
    * Hand-written format string scanner. Replaces the fastparse-based parser with direct
    * `String.indexOf('%')` scanning, which is a JVM intrinsic / native SIMD-optimized operation. For
@@ -137,17 +295,23 @@ object Format {
    */
   private def scanFormat(s: String): RuntimeFormat = {
     val len = s.length
-    val specsBuilder = new java.util.ArrayList[FormatSpec]()
-    val literalsBuilder = new java.util.ArrayList[String]()
+    val specsBuilder = new scala.collection.mutable.ArrayBuilder.ofLong
+    var labelsBuilder: java.util.ArrayList[String] = null
+    val litStartsBuilder = new scala.collection.mutable.ArrayBuilder.ofInt
+    val litEndsBuilder = new scala.collection.mutable.ArrayBuilder.ofInt
     var staticChars = 0
     var hasAnyStar = false
+    var specCount = 0
+    var allSimpleNamed = true
+    var lastLabel: String = null
+    var firstNamedLabel: String = null
+    var allNamedLabelsSame = true
 
     // Find the first '%' to extract the leading literal
     var pos = s.indexOf('%')
-    val leading =
-      if (pos < 0) s // No format specs at all
-      else s.substring(0, pos)
-    staticChars += leading.length
+    val leadingStart = 0
+    val leadingEnd = if (pos < 0) len else pos
+    staticChars += leadingEnd - leadingStart
 
     while (pos >= 0 && pos < len) {
       pos += 1 // skip the '%'
@@ -155,14 +319,32 @@ object Format {
 
       // Parse format spec: %(label)flags width.precision [hlL] conversion
       // 1. Optional label: (key)
-      val label: Option[String] =
+      val label: String =
         if (s.charAt(pos) == '(') {
+          val labelStart = pos + 1
           val closeIdx = s.indexOf(')', pos + 1)
           if (closeIdx < 0) throw new Exception("Unterminated ( in format spec")
-          val key = s.substring(pos + 1, closeIdx)
+          val labelLen = closeIdx - labelStart
+          val key =
+            if (lastLabel != null && sameRegion(s, labelStart, labelLen, lastLabel)) lastLabel
+            else {
+              val nextLabel = s.substring(labelStart, closeIdx)
+              lastLabel = nextLabel
+              nextLabel
+            }
           pos = closeIdx + 1
-          Some(key)
-        } else None
+          if (labelsBuilder == null) {
+            labelsBuilder = new java.util.ArrayList[String]()
+            var fill = 0
+            while (fill < specCount) {
+              labelsBuilder.add(null)
+              fill += 1
+            }
+          }
+          if (firstNamedLabel == null) firstNamedLabel = key
+          else if (allNamedLabelsSame && key != firstNamedLabel) allNamedLabelsSame = false
+          key
+        } else { allSimpleNamed = false; null }
 
       // 2. Flags: #0- +
       var alternate = false
@@ -184,7 +366,7 @@ object Format {
       }
 
       // 3. Width: integer or *
-      var width: Option[Int] = None
+      var width = FormatSpec.NoNumber
       var widthStar = false
       if (pos < len) {
         val c = s.charAt(pos)
@@ -195,10 +377,10 @@ object Format {
           var w = c - '0'
           pos += 1
           while (pos < len && s.charAt(pos) >= '0' && s.charAt(pos) <= '9') {
-            w = w * 10 + (s.charAt(pos) - '0')
+            w = FormatSpec.appendNumberDigit(w, s.charAt(pos) - '0')
             pos += 1
           }
-          width = Some(w)
+          width = w
         } else if (c == '0' && zeroPadded) {
           // '0' was already consumed as a flag, but '0' followed by digits could be width
           // The flag loop already handled leading '0', skip
@@ -206,7 +388,7 @@ object Format {
       }
 
       // 4. Precision: .integer or .*
-      var precision: Option[Int] = None
+      var precision = FormatSpec.NoNumber
       var precisionStar = false
       if (pos < len && s.charAt(pos) == '.') {
         pos += 1
@@ -219,13 +401,13 @@ object Format {
             var p = c - '0'
             pos += 1
             while (pos < len && s.charAt(pos) >= '0' && s.charAt(pos) <= '9') {
-              p = p * 10 + (s.charAt(pos) - '0')
+              p = FormatSpec.appendNumberDigit(p, s.charAt(pos) - '0')
               pos += 1
             }
-            precision = Some(p)
+            precision = p
           } else {
             // "." with no digits = precision 0
-            precision = Some(0)
+            precision = 0
           }
         }
       }
@@ -243,44 +425,66 @@ object Format {
       if ("diouxXeEfFgGcrsa%".indexOf(conversion) < 0)
         throw new Exception(s"Unrecognized conversion type: $conversion")
 
-      specsBuilder.add(
-        FormatSpec(
-          label,
-          alternate,
-          zeroPadded,
-          leftAdjusted,
-          blankBeforePositive,
-          signCharacter,
-          width,
-          widthStar,
-          precision,
-          precisionStar,
-          conversion
-        )
+      val spec = FormatSpec(
+        label != null,
+        alternate,
+        zeroPadded,
+        leftAdjusted,
+        blankBeforePositive,
+        signCharacter,
+        width,
+        widthStar,
+        precision,
+        precisionStar,
+        conversion
       )
+      specsBuilder += spec.bits
+      if (labelsBuilder != null) labelsBuilder.add(label)
+      specCount += 1
       hasAnyStar ||= widthStar || precisionStar
+      if (!spec.isSimpleString || label == null) allSimpleNamed = false
 
       // Find next '%' to extract the literal between this spec and the next
       val nextPct = s.indexOf('%', pos)
-      val literal =
-        if (nextPct < 0) s.substring(pos) // Rest of string is literal
-        else s.substring(pos, nextPct)
-      literalsBuilder.add(literal)
-      staticChars += literal.length
+      val litStart = pos
+      val litEnd = if (nextPct < 0) len else nextPct
+      litStartsBuilder += litStart
+      litEndsBuilder += litEnd
+      staticChars += litEnd - litStart
 
       pos = nextPct
     }
 
-    val size = specsBuilder.size()
-    val specs = new Array[FormatSpec](size)
-    val literals = new Array[String](size)
-    var idx = 0
-    while (idx < size) {
-      specs(idx) = specsBuilder.get(idx)
-      literals(idx) = literalsBuilder.get(idx)
-      idx += 1
+    val specs = specsBuilder.result()
+    val size = specs.length
+    val singleNamedLabel =
+      if (allSimpleNamed && allNamedLabelsSame && size > 0) firstNamedLabel else null
+    val labels =
+      if (labelsBuilder == null || singleNamedLabel != null) null else new Array[String](size)
+    val litStarts = litStartsBuilder.result()
+    val litEnds = litEndsBuilder.result()
+    if (labels != null) {
+      var idx = 0
+      while (idx < size) {
+        labels(idx) = labelsBuilder.get(idx)
+        idx += 1
+      }
     }
-    new RuntimeFormat(leading, specs, literals, hasAnyStar, staticChars)
+    new RuntimeFormat(
+      null,
+      specs,
+      labels,
+      null,
+      hasAnyStar,
+      staticChars,
+      s,
+      leadingStart,
+      leadingEnd,
+      litStarts,
+      litEnds,
+      singleNamedLabel,
+      allSimpleNamed
+    )
   }
 
   /** Convert a parsed format (leading + Seq of tuples) into a RuntimeFormat with arrays. */
@@ -288,20 +492,42 @@ object Format {
       parsed: (String, scala.Seq[(FormatSpec, String)])): RuntimeFormat = {
     val (leading, chunks) = parsed
     val size = chunks.size
-    val specs = new Array[FormatSpec](size)
+    val specs = new Array[Long](size)
     val literals = new Array[String](size)
+    val emptyStarts = new Array[Int](size)
+    val emptyEnds = new Array[Int](size)
     var staticChars = leading.length
     var hasAnyStar = false
+    var allSimpleNamed = true
     var idx = 0
     while (idx < size) {
       val (formatted, literal) = chunks(idx)
-      specs(idx) = formatted
+      if (formatted.hasLabel) {
+        throw new Exception("Lowered FormatSpec labels require label strings")
+      }
+      specs(idx) = formatted.bits
       literals(idx) = literal
       staticChars += literal.length
       hasAnyStar ||= formatted.widthStar || formatted.precisionStar
+      allSimpleNamed = false
       idx += 1
     }
-    new RuntimeFormat(leading, specs, literals, hasAnyStar, staticChars)
+    // No source string available for fastparse path; offset arrays are unused
+    new RuntimeFormat(
+      leading,
+      specs,
+      null,
+      literals,
+      hasAnyStar,
+      staticChars,
+      null,
+      0,
+      0,
+      emptyStarts,
+      emptyEnds,
+      null,
+      allSimpleNamed
+    )
   }
 
   def format(leading: String, chunks: scala.Seq[(FormatSpec, String)], values0: Val, pos: Position)(
@@ -309,43 +535,76 @@ object Format {
     format(lowerParsedFormat((leading, chunks)), values0, pos)
   }
 
+  private def appendLeading(output: java.lang.StringBuilder, parsed: RuntimeFormat): Unit = {
+    val source = parsed.source
+    if (source != null) output.append(source, parsed.leadingStart, parsed.leadingEnd)
+    else output.append(parsed.leading)
+  }
+
+  private def appendLiteral(
+      output: java.lang.StringBuilder,
+      parsed: RuntimeFormat,
+      idx: Int): Unit = {
+    val source = parsed.source
+    if (source != null) output.append(source, parsed.literalStarts(idx), parsed.literalEnds(idx))
+    else output.append(parsed.literals(idx))
+  }
+
   private def format(parsed: RuntimeFormat, values0: Val, pos: Position)(implicit
       evaluator: EvalScope): String = {
+
+    // Super-fast path: all specs are simple %(key)s with an object value.
+    // Avoids per-spec pattern matching, widenRaw, and uses offset-based literal appends.
+    if (parsed.allSimpleNamedString && values0.isInstanceOf[Val.Obj]) {
+      return formatSimpleNamedString(parsed, values0.asInstanceOf[Val.Obj], pos)
+    }
+
     val values = values0 match {
       case x: Val.Arr => x
       case x: Val.Obj => x
       case x          => Val.Arr(pos, Array[Eval](x))
     }
+    val valuesArr = values match {
+      case x: Val.Arr => x
+      case _          => null
+    }
+    val valuesObj = values match {
+      case x: Val.Obj => x
+      case _          => null
+    }
+    val labels = parsed.labels
+    val specBits = parsed.specBits
     // Pre-size StringBuilder based on static chars + estimated dynamic content
-    val output = new StringBuilder(parsed.staticChars + parsed.specs.length * 8)
-    output.append(parsed.leading)
+    val output = new java.lang.StringBuilder(parsed.staticChars + specBits.length * 8)
+    appendLeading(output, parsed)
     var i = 0
     var idx = 0
     // Use while-loop instead of for/zipWithIndex to avoid iterator allocation
-    while (idx < parsed.specs.length) {
-      val rawFormatted = parsed.specs(idx)
-      val literal = parsed.literals(idx)
+    while (idx < specBits.length) {
+      val rawFormatted = FormatSpec.fromBits(specBits(idx))
       var formatted = rawFormatted
       val cooked0 = formatted.conversion match {
         case '%' => widenRaw(formatted, "%")
         case _   =>
-          if (values.isInstanceOf[Val.Arr] && i >= values.cast[Val.Arr].length) {
+          if (valuesArr != null && i >= valuesArr.length) {
             Error.fail(
               "Too few values to format: %d, expected at least %d".format(
-                values.cast[Val.Arr].length,
+                valuesArr.length,
                 i + 1
               )
             )
           }
-          val raw = formatted.label match {
-            case None =>
+          val key = if (labels == null) null else labels(idx)
+          val raw =
+            if (key == null) {
+              if (valuesArr == null) Error.fail("Invalid format values")
               // Fast path: skip star checks when format has no * specifiers
-              if (!parsed.hasAnyStar) values.cast[Val.Arr].value(i)
+              if (!parsed.hasAnyStar) valuesArr.value(i)
               else
                 (formatted.widthStar, formatted.precisionStar) match {
-                  case (false, false) => values.cast[Val.Arr].value(i)
+                  case (false, false) => valuesArr.value(i)
                   case (true, false)  =>
-                    val width = values.cast[Val.Arr].value(i)
+                    val width = valuesArr.value(i)
                     if (!width.isInstanceOf[Val.Num]) {
                       Error.fail(
                         "A * was specified at position %d. An integer is expected for a width"
@@ -355,10 +614,10 @@ object Format {
                       )
                     }
                     i += 1
-                    formatted = formatted.updateWithStarValues(Some(width.asInt), None)
-                    values.cast[Val.Arr].value(i)
+                    formatted = formatted.withStarWidth(width.asInt)
+                    valuesArr.value(i)
                   case (false, true) =>
-                    val precision = values.cast[Val.Arr].value(i)
+                    val precision = valuesArr.value(i)
                     if (!precision.isInstanceOf[Val.Num]) {
                       Error.fail(
                         "A * was specified at position %d. An integer is expected for a precision"
@@ -366,10 +625,10 @@ object Format {
                       )
                     }
                     i += 1
-                    formatted = formatted.updateWithStarValues(None, Some(precision.asInt))
-                    values.cast[Val.Arr].value(i)
+                    formatted = formatted.withStarPrecision(precision.asInt)
+                    valuesArr.value(i)
                   case (true, true) =>
-                    val width = values.cast[Val.Arr].value(i)
+                    val width = valuesArr.value(i)
                     if (!width.isInstanceOf[Val.Num]) {
                       Error.fail(
                         "A * was specified at position %d. An integer is expected for a width"
@@ -379,7 +638,7 @@ object Format {
                       )
                     }
                     i += 1
-                    val precision = values.cast[Val.Arr].value(i)
+                    val precision = valuesArr.value(i)
                     if (!precision.isInstanceOf[Val.Num]) {
                       Error.fail(
                         "A * was specified at position %d. An integer is expected for a precision"
@@ -387,17 +646,14 @@ object Format {
                       )
                     }
                     i += 1
-                    formatted =
-                      formatted.updateWithStarValues(Some(width.asInt), Some(precision.asInt))
-                    values.cast[Val.Arr].value(i)
+                    formatted = formatted.withStarValues(width.asInt, precision.asInt)
+                    valuesArr.value(i)
                 }
-            case Some(key) =>
-              values match {
-                case v: Val.Arr => v.value(i)
-                case v: Val.Obj => v.value(key, pos)
-                case _          => Error.fail("Invalid format values")
-              }
-          }
+            } else {
+              if (valuesArr != null) valuesArr.value(i)
+              else if (valuesObj != null) valuesObj.value(key, pos)
+              else Error.fail("Invalid format values")
+            }
           // Direct Val dispatch: skip Materializer for common types (Str, Num, Bool, Null).
           // This avoids the overhead of materializing to ujson.Value and then matching on it,
           // which is a significant cost for format-heavy workloads like large_string_template.
@@ -476,17 +732,92 @@ object Format {
           formattedValue
       }
       output.append(cooked0)
-      output.append(literal)
+      appendLiteral(output, parsed, idx)
       idx += 1
     }
 
-    if (values.isInstanceOf[Val.Arr] && i < values.cast[Val.Arr].length) {
+    if (valuesArr != null && i < valuesArr.length) {
       Error.fail(
-        "Too many values to format: %d, expected %d".format(values.cast[Val.Arr].length, i)
+        "Too many values to format: %d, expected %d".format(valuesArr.length, i)
       )
     }
     output.toString()
   }
+
+  /**
+   * Super-fast path for format strings where ALL specs are simple `%(key)s` with a `Val.Obj`. This
+   * avoids per-spec pattern matching, widenRaw overhead, and caches repeated key lookups. For the
+   * large_string_template benchmark (605KB, 256 `%(x)s` interpolations), this eliminates 256
+   * redundant object lookups and the generic dispatch overhead.
+   */
+  private def formatSimpleNamedString(parsed: RuntimeFormat, obj: Val.Obj, pos: Position)(implicit
+      evaluator: EvalScope): String = {
+    val output = new java.lang.StringBuilder(parsed.staticChars + parsed.specBits.length * 16)
+
+    // Append leading literal using offsets if source is available, else use string
+    appendLeading(output, parsed)
+
+    val singleLabel = parsed.singleNamedLabel
+    if (singleLabel != null) {
+      val str = simpleStringValue(obj.value(singleLabel, pos)(evaluator).value)
+      var idx = 0
+      while (idx < parsed.specBits.length) {
+        output.append(str)
+        appendLiteral(output, parsed, idx)
+        idx += 1
+      }
+      return output.toString
+    }
+
+    // Cache for repeated key lookups: most format strings reuse the same key many times
+    var cachedKey: String = null
+    var cachedStr: String = null
+
+    var idx = 0
+    while (idx < parsed.specBits.length) {
+      val key = parsed.labels(idx)
+
+      // Look up and cache the string value for this key
+      // String.equals already does identity check (eq) internally
+      val str =
+        if (key == cachedKey) cachedStr
+        else {
+          val rawVal = obj.value(key, pos)(evaluator).value
+          val s = simpleStringValue(rawVal)
+          cachedKey = key
+          cachedStr = s
+          s
+        }
+
+      output.append(str)
+
+      // Append trailing literal using offsets if source is available
+      appendLiteral(output, parsed, idx)
+
+      idx += 1
+    }
+    output.toString
+  }
+
+  private def simpleStringValue(rawVal: Val)(implicit evaluator: EvalScope): String =
+    rawVal match {
+      case vs: Val.Str => vs.str
+      case vn: Val.Num =>
+        if (vn.asDouble.toLong.toDouble == vn.asDouble) vn.asDouble.toLong.toString
+        else vn.asDouble.toString
+      case _: Val.True  => "true"
+      case _: Val.False => "false"
+      case _: Val.Null  => "null"
+      case f: Val.Func  => Error.fail("Cannot format function value", f)
+      case other        =>
+        // Complex types: materialize via Renderer
+        val value = other match {
+          case r: Val.Arr => Materializer.apply0(r, new Renderer(indent = -1))
+          case r: Val.Obj => Materializer.apply0(r, new Renderer(indent = -1))
+          case _          => Materializer(other)
+        }
+        value.toString
+    }
 
   private def formatInteger(formatted: FormatSpec, s: Double): String = {
     // Fast path: if the value fits in a Long (and isn't Long.MinValue where
@@ -496,14 +827,14 @@ object Format {
       val negative = sl < 0
       val lhs = if (negative) "-" else ""
       val rhs = java.lang.Long.toString(if (negative) -sl else sl)
-      val rhs2 = precisionPad(lhs, rhs, formatted.precision)
+      val rhs2 = precisionPad(lhs, rhs, formatted.precisionValue)
       widen(formatted, lhs, "", rhs2, numeric = true, signedConversion = !negative)
     } else {
       val i = BigDecimal(s).toBigInt
       val negative = i.signum < 0
       val lhs = if (negative) "-" else ""
       val rhs = i.abs.toString(10)
-      val rhs2 = precisionPad(lhs, rhs, formatted.precision)
+      val rhs2 = precisionPad(lhs, rhs, formatted.precisionValue)
       widen(formatted, lhs, "", rhs2, numeric = true, signedConversion = !negative)
     }
   }
@@ -515,7 +846,7 @@ object Format {
       "",
       sjsonnet.DecimalFormat
         .format(
-          formatted.precision.getOrElse(6),
+          formatted.precisionOr(6),
           0,
           formatted.alternate,
           None,
@@ -535,7 +866,7 @@ object Format {
       val negative = sl < 0
       val lhs = if (negative) "-" else ""
       val rhs = java.lang.Long.toString(if (negative) -sl else sl, 8)
-      val rhs2 = precisionPad(lhs, rhs, formatted.precision)
+      val rhs2 = precisionPad(lhs, rhs, formatted.precisionValue)
       widen(
         formatted,
         lhs,
@@ -549,7 +880,7 @@ object Format {
       val negative = i.signum < 0
       val lhs = if (negative) "-" else ""
       val rhs = i.abs.toString(8)
-      val rhs2 = precisionPad(lhs, rhs, formatted.precision)
+      val rhs2 = precisionPad(lhs, rhs, formatted.precisionValue)
       widen(
         formatted,
         lhs,
@@ -568,7 +899,7 @@ object Format {
       val negative = sl < 0
       val lhs = if (negative) "-" else ""
       val rhs = java.lang.Long.toString(if (negative) -sl else sl, 16)
-      val rhs2 = precisionPad(lhs, rhs, formatted.precision)
+      val rhs2 = precisionPad(lhs, rhs, formatted.precisionValue)
       widen(
         formatted,
         lhs,
@@ -582,7 +913,7 @@ object Format {
       val negative = i.signum < 0
       val lhs = if (negative) "-" else ""
       val rhs = i.abs.toString(16)
-      val rhs2 = precisionPad(lhs, rhs, formatted.precision)
+      val rhs2 = precisionPad(lhs, rhs, formatted.precisionValue)
       widen(
         formatted,
         lhs,
@@ -594,17 +925,16 @@ object Format {
     }
   }
 
-  private def precisionPad(lhs: String, rhs: String, precision: Option[Int]): String = {
-    precision match {
-      case None    => rhs
-      case Some(p) =>
-        val shortage = p - rhs.length
-        if (shortage > 0) "0" * shortage + rhs else rhs
+  private def precisionPad(lhs: String, rhs: String, precision: Int): String = {
+    if (precision == FormatSpec.NoNumber) rhs
+    else {
+      val shortage = precision - rhs.length
+      if (shortage > 0) "0" * shortage + rhs else rhs
     }
   }
 
   private def formatGeneric(formatted: FormatSpec, s: Double): String = {
-    val precision = formatted.precision.getOrElse(6)
+    val precision = formatted.precisionOr(6)
     val exponent = if (s != 0) math.floor(math.log10(math.abs(s))).toInt else 0
     if (exponent < -4 || exponent >= precision) {
       widen(
@@ -652,7 +982,7 @@ object Format {
       "",
       sjsonnet.DecimalFormat
         .format(
-          formatted.precision.getOrElse(6),
+          formatted.precisionOr(6),
           0,
           formatted.alternate,
           Some(2),
