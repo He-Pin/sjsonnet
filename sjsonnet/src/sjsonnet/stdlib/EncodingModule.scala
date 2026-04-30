@@ -3,6 +3,8 @@ package sjsonnet.stdlib
 import sjsonnet._
 import sjsonnet.functions.AbstractFunctionModule
 
+import java.nio.charset.StandardCharsets.UTF_8
+
 /**
  * Native implementations for Jsonnet standard-library entries in this module.
  *
@@ -47,26 +49,28 @@ object EncodingModule extends AbstractFunctionModule {
     builtin("base64", "input") { (pos, _, input: Val) =>
       (input match {
         case Val.Str(_, value) =>
-          Val.Str.asciiSafe(pos, PlatformBase64.encodeToString(value.getBytes("UTF-8")))
+          Val.Str.asciiSafe(pos, PlatformBase64.encodeToString(value.getBytes(UTF_8)))
         case ba: Val.ByteArr =>
           Val.Str.asciiSafe(pos, PlatformBase64.encodeToString(ba.rawBytes))
         case arr: Val.Arr =>
-          val byteArr = new Array[Byte](arr.length)
+          val len = arr.length
+          val byteArr = new Array[Byte](len)
           var i = 0
-          while (i < arr.length) {
-            val v = arr.value(i)
-            if (!v.isInstanceOf[Val.Num]) {
-              Error.fail(
-                f"Expected an array of numbers, got a ${v.prettyName} at position $i"
-              )
+          while (i < len) {
+            arr.value(i) match {
+              case v: Val.Num =>
+                val vInt = v.asInt
+                if (vInt < 0 || vInt > 255) {
+                  Error.fail(
+                    f"Found an invalid codepoint value at position $i (must be 0 <= X <= 255), got $vInt"
+                  )
+                }
+                byteArr(i) = vInt.toByte
+              case v =>
+                Error.fail(
+                  f"Expected an array of numbers, got a ${v.prettyName} at position $i"
+                )
             }
-            val vInt = v.asInt
-            if (vInt < 0 || vInt > 255) {
-              Error.fail(
-                f"Found an invalid codepoint value at position $i (must be 0 <= X <= 255), got $vInt"
-              )
-            }
-            byteArr(i) = vInt.toByte
             i += 1
           }
           Val.Str.asciiSafe(pos, PlatformBase64.encodeToString(byteArr))
@@ -86,7 +90,7 @@ object EncodingModule extends AbstractFunctionModule {
      */
     builtin("base64Decode", "str") { (_, _, str: String) =>
       try {
-        new String(PlatformBase64.decode(str), "UTF-8")
+        new String(PlatformBase64.decode(str), UTF_8)
       } catch {
         case e: IllegalArgumentException =>
           Error.fail("Invalid base64 string: " + e.getMessage)

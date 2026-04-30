@@ -54,6 +54,7 @@ object StdWithKeyFTests extends TestSuite {
       eval("""std.sort([1, 2, 3])""").toString() ==> """[1,2,3]"""
       eval("""std.sort([1,2,3], keyF=function(x) -x)""").toString() ==> """[3,2,1]"""
       eval("""std.sort([1,2,3], function(x) -x)""").toString() ==> """[3,2,1]"""
+      eval("""local f = error "unused"; std.sort([], function(x) f(f(x)))""").toString() ==> "[]"
       eval(
         """std.sort([[1,'b'], [2], [1], [], [1,'a']])"""
       ).toString() ==> """[[],[1],[1,"a"],[1,"b"],[2]]"""

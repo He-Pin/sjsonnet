@@ -276,28 +276,27 @@ object ArrayModule extends AbstractFunctionModule {
       val arg = arr.value
       arg match {
         case Val.Str(_, str) => evalStr(func, str, ev, pos.noOffset)
-        case _               => evalArr(func, arg.asArr.asLazyArray, ev, pos)
+        case _               => evalArr(func, arg.asArr, ev, pos)
       }
     }
 
-    private def evalArr(
-        _func: Val.Func,
-        arg: Array[Eval],
-        ev: EvalScope,
-        pos: Position): Val.Arr = {
+    private def evalArr(_func: Val.Func, arg: Val.Arr, ev: EvalScope, pos: Position): Val.Arr = {
+      // Keep map as per-element LazyApply1 thunks. On the JVM this is faster for the common
+      // "map then fully consume" path than an indexed view with a shared state side table, while
+      // still preserving lazy element evaluation.
       val noOff = pos.noOffset
-      // Pre-sized array with while-loop avoids .map closure overhead
-      val result = new Array[Eval](arg.length)
+      val len = arg.length
+      val result = new Array[Eval](len)
       var i = 0
-      while (i < arg.length) {
-        result(i) = new LazyApply1(_func, arg(i), noOff, ev)
+      while (i < len) {
+        result(i) = new LazyApply1(_func, arg.eval(i), noOff, ev)
         i += 1
       }
       Val.Arr(pos, result)
     }
 
     private def evalStr(_func: Val.Func, arg: String, ev: EvalScope, pos: Position): Val.Arr = {
-      evalArr(_func, stringChars(pos, arg).asLazyArray, ev, pos)
+      evalArr(_func, stringChars(pos, arg), ev, pos)
     }
   }
 
@@ -870,15 +869,9 @@ object ArrayModule extends AbstractFunctionModule {
           }
           Val.Str(pos, builder.toString())
         case a: Val.Arr =>
-          val lazyArray = a.asLazyArray
-          val elemLen = lazyArray.length
-          val result = new Array[Eval](elemLen * count)
-          var i = 0
-          while (i < count) {
-            System.arraycopy(lazyArray, 0, result, i * elemLen, elemLen)
-            i += 1
-          }
-          Val.Arr(pos, result)
+          if (a.length.toLong * count.toLong > Int.MaxValue)
+            Error.fail("array too large", pos)(ev)
+          Val.Arr.repeated(pos, a, count)
         case x => Error.fail("std.repeat first argument must be an array or a string")
       }
       res

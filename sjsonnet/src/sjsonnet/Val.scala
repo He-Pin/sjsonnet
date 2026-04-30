@@ -8,6 +8,7 @@ import scala.annotation.{nowarn, tailrec}
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.reflect.ClassTag
+import scala.util.control.NonFatal
 
 /**
  * [[Eval]] is the common parent trait for both lazy and eager evaluation, providing a unified
@@ -126,6 +127,21 @@ final class LazyApply2(
       val r = funcOrVal.asInstanceOf[Val.Func].apply2(arg1, arg2, pos)(ev, TailstrictModeDisabled)
       funcOrVal = r
       arg1 = null; arg2 = null; pos = null; ev = null
+      r
+    }
+  }
+}
+
+private final class LazyIndexedElem(private var owner: Val.LazyIndexedArr, private val index: Int)
+    extends Lazy {
+  private var cached: Val = _
+  def value: Val = {
+    val o = owner
+    if (o == null) cached
+    else {
+      val r = o.value(index)
+      cached = r
+      owner = null
       r
     }
   }
@@ -695,6 +711,129 @@ object Val {
     }
   }
 
+  object LazyIndexedArr {
+    private object Computing
+  }
+
+  private[sjsonnet] abstract class LazyIndexedArr(pos0: Position, size: Int)
+      extends Arr(pos0, null) {
+    import LazyIndexedArr.*
+
+    _length = size
+    // Compact slot state:
+    //   null       = never evaluated
+    //   Computing  = currently evaluating this index
+    //   Val        = cached successful result
+    //
+    // Exceptions intentionally reset the slot to null rather than being cached. That matches the
+    // existing LazyFunc/LazyExpr behavior and avoids changing observable std.trace/error behavior
+    // on repeated failed evaluation.
+    private[this] var slots: Array[AnyRef] = null
+
+    protected def computeValue(i: Int): Val
+
+    protected def errorScope: EvalErrorScope
+
+    private[this] def ensureSlots(): Array[AnyRef] = {
+      val current = slots
+      if (current != null) current
+      else {
+        val fresh = new Array[AnyRef](_length)
+        slots = fresh
+        fresh
+      }
+    }
+
+    override def value(i: Int): Val = {
+      val currentSlots = slots
+      if (currentSlots != null) {
+        currentSlots(i) match {
+          case null      =>
+          case Computing => Error.fail("Infinite recursion detected", pos0)(errorScope)
+          case v         => return v.asInstanceOf[Val]
+        }
+      }
+      val target = ensureSlots()
+      target(i) = Computing
+      try {
+        val computed = computeValue(i)
+        target(i) = computed
+        computed
+      } catch {
+        case NonFatal(e) =>
+          target(i) = null
+          throw e
+      }
+    }
+
+    override def eval(i: Int): Eval = {
+      val currentSlots = slots
+      if (currentSlots != null) {
+        currentSlots(i) match {
+          case v: Val => return v
+          case _      =>
+        }
+      }
+      new LazyIndexedElem(this, i)
+    }
+
+    override def asLazyArray: Array[Eval] = {
+      val len = _length
+      val result = new Array[Eval](len)
+      val currentSlots = slots
+      var i = 0
+      while (i < len) {
+        result(i) =
+          if (currentSlots == null) new LazyIndexedElem(this, i)
+          else
+            currentSlots(i) match {
+              case v: Val => v
+              case _      => new LazyIndexedElem(this, i)
+            }
+        i += 1
+      }
+      result
+    }
+
+    override def reversed(newPos: Position): Arr = {
+      val result = Arr(newPos, asLazyArray)
+      result._reversed = true
+      result
+    }
+  }
+
+  private final class RepeatedArr(pos0: Position, private[this] val source: Arr, count: Int)
+      extends Arr(pos0, null) {
+    // Keep std.repeat(array, n) as an indexed view. The common consumers either index a subset or
+    // materialize later anyway; eagerly copying here multiplies thunks and stresses young-gen GC.
+    private[this] val sourceLen = source.length
+    private[this] val totalLen = sourceLen.toLong * count.toLong
+    if (totalLen > Int.MaxValue) throw new IllegalArgumentException("array too large")
+    _length = totalLen.toInt
+
+    override def value(i: Int): Val =
+      source.value(i % sourceLen)
+
+    override def eval(i: Int): Eval =
+      source.eval(i % sourceLen)
+
+    override def asLazyArray: Array[Eval] = {
+      val sourceArr = source.asLazyArray
+      val sourceLen = this.sourceLen
+      val len = _length
+      val result = new Array[Eval](len)
+      var offset = 0
+      while (offset < len) {
+        System.arraycopy(sourceArr, 0, result, offset, sourceLen)
+        offset += sourceLen
+      }
+      result
+    }
+
+    override def reversed(newPos: Position): Arr =
+      new RepeatedArr(newPos, source.reversed(newPos), count)
+  }
+
   /**
    * Lazy range array representing the integer sequence [from, from+1, ..., from+size-1]. Separate
    * subclass keeps the `rangeFrom` field out of regular `Arr` instances, saving ~9 bytes per
@@ -826,6 +965,10 @@ object Val {
 
   object Arr {
     def apply(pos: Position, arr: Array[? <: Eval]): Arr = new Arr(pos, arr)
+
+    def repeated(pos: Position, source: Arr, count: Int): Arr =
+      if (count == 0 || source.length == 0) Arr(pos, EMPTY_EVAL_ARRAY)
+      else new RepeatedArr(pos, source, count)
 
     /** Create a byte-backed array from raw bytes (e.g. base64DecodeBytes output). */
     def fromBytes(pos: Position, bytes: Array[Byte]): Arr = new ByteArr(pos, bytes)
@@ -1604,6 +1747,23 @@ object Val {
       TailCall.resolve(evalRhs(scope, ev, fs, pos))(ev)
 
     def evalDefault(expr: Expr, vs: ValScope, es: EvalScope): Val = null
+
+    final private[sjsonnet] def isIdentityFunction: Boolean =
+      params.names.length == 1 && {
+        bodyExpr match {
+          case id: Expr.ValidId => id.nameIdx == defSiteValScope.length
+          case _                => false
+        }
+      }
+
+    final private[sjsonnet] def isUnaryMinusParamFunction: Boolean =
+      params.names.length == 1 && {
+        bodyExpr match {
+          case Expr.UnaryOp(_, Expr.UnaryOp.OP_-, id: Expr.ValidId) =>
+            id.nameIdx == defSiteValScope.length
+          case _ => false
+        }
+      }
 
     /** Override to provide a function name for error messages. Only called on error paths. */
     def functionName: String = null
