@@ -89,6 +89,32 @@ object CharSWAR {
     false
   }
 
+  def findFirstEscapeChar(arr: Array[Byte], from: Int, to: Int): Int = {
+    val len = to - from
+    if (len < 8) return findFirstEscapeCharScalar(arr, from, to)
+    val barr = arr.asInstanceOf[ByteArray]
+    var i = from
+    val limit = to - 7
+    while (i < limit) {
+      val word = Intrinsics.loadLong(barr.atRawUnsafe(i))
+      if (swarHasMatch(word)) {
+        var j = i
+        while (j < i + 8) {
+          val b = arr(j) & 0xff
+          if (b < 32 || b == '"' || b == '\\') return j
+          j += 1
+        }
+      }
+      i += 8
+    }
+    while (i < to) {
+      val b = arr(i) & 0xff
+      if (b < 32 || b == '"' || b == '\\') return i
+      i += 1
+    }
+    -1
+  }
+
   @inline private def hasEscapeCharScalar(s: String, len: Int): Boolean = {
     var i = 0
     while (i < len) {
@@ -107,5 +133,15 @@ object CharSWAR {
       i += 1
     }
     false
+  }
+
+  @inline private def findFirstEscapeCharScalar(arr: Array[Byte], from: Int, to: Int): Int = {
+    var i = from
+    while (i < to) {
+      val b = arr(i) & 0xff
+      if (b < 32 || b == '"' || b == '\\') return i
+      i += 1
+    }
+    -1
   }
 }

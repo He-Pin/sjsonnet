@@ -90,6 +90,31 @@ final class CharSWAR {
         return false;
     }
 
+    /**
+     * Find the first byte in {@code arr[from..to)} that needs JSON string escaping, or {@code -1}
+     * when the range is clean.
+     */
+    static int findFirstEscapeChar(byte[] arr, int from, int to) {
+        int i = from;
+        int limit = to - 7;
+        while (i < limit) {
+            long word = (long) LONG_VIEW.get(arr, i);
+            if (swarHasMatch(word)) {
+                for (int j = i; j < i + 8; j++) {
+                    int b = arr[j] & 0xFF;
+                    if (b < 32 || b == '"' || b == '\\') return j;
+                }
+            }
+            i += 8;
+        }
+        while (i < to) {
+            int b = arr[i] & 0xFF;
+            if (b < 32 || b == '"' || b == '\\') return i;
+            i++;
+        }
+        return -1;
+    }
+
     private static boolean hasEscapeCharSWAR(byte[] arr, int from, int to) {
         int i = from;
         int limit = to - 7; // 8 bytes per VarHandle.get
