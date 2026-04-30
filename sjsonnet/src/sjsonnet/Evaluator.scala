@@ -349,7 +349,7 @@ class Evaluator(
       visitExpr(expr)(scope) match {
         case a: Val.Arr =>
           if (debugStats != null) debugStats.arrayCompIterations += a.length
-          val lazyArr = a.asLazyArray
+          val len = a.length
           if (rest.isEmpty) {
             // Innermost loop: try BinaryOp(ValidId,ValidId) fast path
             body match {
@@ -369,8 +369,8 @@ class Evaluator(
                 val op = binOp.op
                 val bpos = binOp.pos
                 var j = 0
-                while (j < lazyArr.length) {
-                  bindings(slot) = lazyArr(j)
+                while (j < len) {
+                  bindings(slot) = a.eval(j)
                   val l = bindings(lhsIdx).value
                   val r = bindings(rhsIdx).value
                   (l, r) match {
@@ -385,7 +385,7 @@ class Evaluator(
                   }
                   j += 1
                 }
-              case _ if lazyArr.length > 1 && isNonCapturingBody(body) =>
+              case _ if len > 1 && isNonCapturingBody(body) =>
                 // Scope reuse for non-capturing bodies: evaluate eagerly with a single
                 // mutable scope instead of allocating a new scope per iteration.
                 // Safe because non-capturing bodies (ValidId, BinaryOp, UnaryOp, And, Or,
@@ -393,15 +393,15 @@ class Evaluator(
                 val mutableScope = scope.extendBy(1)
                 val slot = scope.bindings.length
                 var j = 0
-                while (j < lazyArr.length) {
-                  mutableScope.bindings(slot) = lazyArr(j)
+                while (j < len) {
+                  mutableScope.bindings(slot) = a.eval(j)
                   results += visitExpr(body)(mutableScope)
                   j += 1
                 }
               case _ =>
                 var j = 0
-                while (j < lazyArr.length) {
-                  results += visitAsLazy(body)(scope.extendSimple(lazyArr(j)))
+                while (j < len) {
+                  results += visitAsLazy(body)(scope.extendSimple(a.eval(j)))
                   j += 1
                 }
             }
@@ -411,15 +411,15 @@ class Evaluator(
               // doesn't depend on the outer variable, evaluate it once instead of N times.
               // E.g. [x*y for x in A for y in B] where B is invariant w.r.t. x.
               case (innerFor: ForSpec) :: Nil
-                  if lazyArr.length > 1
+                  if len > 1
                     && isNonCapturingBody(body)
                     && isInvariantExpr(innerFor.cond, scope.bindings.length) =>
-                visitCompTwoLevel(lazyArr, innerFor, scope, body, results)
+                visitCompTwoLevel(a, innerFor, scope, body, results)
               case _ =>
                 // Generic outer loop: recurse for remaining specs
                 var j = 0
-                while (j < lazyArr.length) {
-                  visitCompFused(rest, scope.extendSimple(lazyArr(j)), body, results)
+                while (j < len) {
+                  visitCompFused(rest, scope.extendSimple(a.eval(j)), body, results)
                   j += 1
                 }
             }
@@ -563,7 +563,7 @@ class Evaluator(
    * methods hurt JIT optimization decisions.
    */
   private def visitCompTwoLevel(
-      outerArr: Array[Eval],
+      outerArr: Val.Arr,
       innerFor: ForSpec,
       scope: ValScope,
       body: Expr,
@@ -571,13 +571,14 @@ class Evaluator(
   ): Unit = {
     // Evaluate inner array once (it's invariant w.r.t. outer var)
     val innerArrVal = visitExpr(innerFor.cond)(scope).cast[Val.Arr]
-    if (debugStats != null) debugStats.arrayCompIterations += outerArr.length * innerArrVal.length
-    val innerArr = innerArrVal.asLazyArray
+    val outerLen = outerArr.length
+    val innerLen = innerArrVal.length
+    if (debugStats != null) debugStats.arrayCompIterations += outerLen * innerLen
 
-    if (innerArr.length == 0) return
+    if (innerLen == 0) return
 
     // Pre-size the result array for the cross-product
-    results.sizeHint(outerArr.length * innerArr.length)
+    results.sizeHint(outerLen * innerLen)
 
     // Allocate a single mutable scope with 2 slots: outer (slot) + inner (slot+1)
     val mutableScope = scope.extendBy(2)
@@ -599,14 +600,14 @@ class Evaluator(
         if (lhsIdx == slot && op <= Expr.BinaryOp.OP_| && op != Expr.BinaryOp.OP_in) {
           // body = outerVar op innerVar — tightest path
           var i = 0
-          while (i < outerArr.length) {
-            extBindings(slot) = outerArr(i)
+          while (i < outerLen) {
+            extBindings(slot) = outerArr.eval(i)
             val outerVal = extBindings(lhsIdx).value
             outerVal match {
               case outerNum: Val.Num =>
                 var j = 0
-                while (j < innerArr.length) {
-                  extBindings(innerSlot) = innerArr(j)
+                while (j < innerLen) {
+                  extBindings(innerSlot) = innerArrVal.eval(j)
                   val innerVal = extBindings(rhsIdx).value
                   innerVal match {
                     case innerNum: Val.Num =>
@@ -618,8 +619,8 @@ class Evaluator(
                 }
               case _ =>
                 var j = 0
-                while (j < innerArr.length) {
-                  extBindings(innerSlot) = innerArr(j)
+                while (j < innerLen) {
+                  extBindings(innerSlot) = innerArrVal.eval(j)
                   results += visitExpr(binOp)(mutableScope)
                   j += 1
                 }
@@ -629,14 +630,14 @@ class Evaluator(
         } else if (rhsIdx == slot && op <= Expr.BinaryOp.OP_| && op != Expr.BinaryOp.OP_in) {
           // body = innerVar op outerVar (swapped operands)
           var i = 0
-          while (i < outerArr.length) {
-            extBindings(slot) = outerArr(i)
+          while (i < outerLen) {
+            extBindings(slot) = outerArr.eval(i)
             val outerVal = extBindings(rhsIdx).value
             outerVal match {
               case outerNum: Val.Num =>
                 var j = 0
-                while (j < innerArr.length) {
-                  extBindings(innerSlot) = innerArr(j)
+                while (j < innerLen) {
+                  extBindings(innerSlot) = innerArrVal.eval(j)
                   val innerVal = extBindings(lhsIdx).value
                   innerVal match {
                     case innerNum: Val.Num =>
@@ -648,8 +649,8 @@ class Evaluator(
                 }
               case _ =>
                 var j = 0
-                while (j < innerArr.length) {
-                  extBindings(innerSlot) = innerArr(j)
+                while (j < innerLen) {
+                  extBindings(innerSlot) = innerArrVal.eval(j)
                   results += visitExpr(binOp)(mutableScope)
                   j += 1
                 }
@@ -659,11 +660,11 @@ class Evaluator(
         } else {
           // Generic BinaryOp(ValidId, ValidId) — not numeric-optimizable
           var i = 0
-          while (i < outerArr.length) {
-            extBindings(slot) = outerArr(i)
+          while (i < outerLen) {
+            extBindings(slot) = outerArr.eval(i)
             var j = 0
-            while (j < innerArr.length) {
-              extBindings(innerSlot) = innerArr(j)
+            while (j < innerLen) {
+              extBindings(innerSlot) = innerArrVal.eval(j)
               results += visitExpr(binOp)(mutableScope)
               j += 1
             }
@@ -675,11 +676,11 @@ class Evaluator(
         // General non-capturing body with mutable scope reuse
         val innerSlot = slot + 1
         var i = 0
-        while (i < outerArr.length) {
-          extBindings(slot) = outerArr(i)
+        while (i < outerLen) {
+          extBindings(slot) = outerArr.eval(i)
           var j = 0
-          while (j < innerArr.length) {
-            extBindings(innerSlot) = innerArr(j)
+          while (j < innerLen) {
+            extBindings(innerSlot) = innerArrVal.eval(j)
             results += visitExpr(body)(mutableScope)
             j += 1
           }
@@ -1963,10 +1964,10 @@ class Evaluator(
         visitExpr(expr)(s) match {
           case a: Val.Arr =>
             if (debugStats != null) debugStats.arrayCompIterations += a.length
-            val lazyArr = a.asLazyArray
+            val len = a.length
             var j = 0
-            while (j < lazyArr.length) {
-              newScopes += s.extendSimple(lazyArr(j))
+            while (j < len) {
+              newScopes += s.extendSimple(a.eval(j))
               j += 1
             }
           case r =>

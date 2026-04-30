@@ -445,9 +445,19 @@ object StringModule extends AbstractFunctionModule {
             x match {
               case Val.Null(_) => // do nothing
               case v: Val.Arr  =>
-                if (added) out ++= sep.asLazyArray
+                if (added) {
+                  var i = 0
+                  while (i < sep.length) {
+                    out += sep.eval(i)
+                    i += 1
+                  }
+                }
                 added = true
-                out ++= v.asLazyArray
+                var i = 0
+                while (i < v.length) {
+                  out += v.eval(i)
+                  i += 1
+                }
               case x => Error.fail("Cannot join " + x.prettyName)
             }
           }

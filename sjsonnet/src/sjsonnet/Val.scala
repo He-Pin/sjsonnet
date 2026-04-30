@@ -886,15 +886,6 @@ object Val {
       if (cache == null) null else cache(i)
     }
 
-    protected final def installMaterialized(result: Array[Eval]): Array[Eval] = {
-      arr = result
-      _reversed = false
-      values = null
-      evals = null
-      releaseCapturedState()
-      result
-    }
-
     private[this] def valueCache: Array[Val] = {
       var cache = values
       if (cache == null) {
@@ -976,15 +967,48 @@ object Val {
 
     override def reversed(newPos: Position): Arr = {
       if ((arr ne null) || isConcatView) super.reversed(newPos)
+      else new ReversedLazyViewArr(newPos, this)
+    }
+  }
+
+  /**
+   * Reversed view over a LazyViewArr.
+   *
+   * This keeps `std.reverse(std.map(...))` O(1): the old path called `asLazyArray` immediately,
+   * allocating one LazyArrayElement per source element just to preserve shared callback caching.
+   * Delegating back to the source by reversed index preserves that cache-sharing without the
+   * upfront wrapper burst.
+   */
+  private final class ReversedLazyViewArr(pos0: Position, private var source: LazyViewArr)
+      extends Arr(pos0, null) {
+    _length = source.length
+
+    override def value(i: Int): Val =
+      if ((arr ne null) || isConcatView) super.value(i)
+      else source.value(_length - 1 - i)
+
+    override def eval(i: Int): Eval =
+      if ((arr ne null) || isConcatView) super.eval(i)
+      else source.eval(_length - 1 - i)
+
+    override def asLazyArray: Array[Eval] = {
+      if ((arr ne null) || isConcatView) super.asLazyArray
       else {
-        // Preserve the old Array[Eval] sharing contract for reversed arrays. The original and
-        // reversed views must point at the same element thunks so traces/native callbacks are not
-        // duplicated when the same logical element is reached through both arrays. This accepts
-        // O(n) materialization for std.reverse(lazyView) to keep user-observable laziness stable.
-        asLazyArray
-        super.reversed(newPos)
+        val len = _length
+        val result = new Array[Eval](len)
+        var i = 0
+        while (i < len) {
+          result(i) = source.eval(len - 1 - i)
+          i += 1
+        }
+        arr = result
+        result
       }
     }
+
+    override def reversed(newPos: Position): Arr =
+      if ((arr ne null) || isConcatView) super.reversed(newPos)
+      else source
   }
 
   /**
@@ -1004,27 +1028,6 @@ object Val {
 
     protected def computeAt(index: Int): Val =
       func.apply1(source.eval(index), callPos)(ev, TailstrictModeDisabled)
-
-    override def asLazyArray: Array[Eval] = {
-      if ((arr ne null) || isConcatView) super.asLazyArray
-      else {
-        val len = _length
-        val result = new Array[Eval](len)
-        val f = func
-        val p = callPos
-        val es = ev
-        var i = 0
-        while (i < len) {
-          val idx = physicalIndex(i)
-          val cached = cachedAtPhysicalIndex(idx)
-          result(i) =
-            if (cached != null) cached
-            else new LazyApply1(f, source.eval(idx), p, es)
-          i += 1
-        }
-        installMaterialized(result)
-      }
-    }
 
     override protected def releaseCapturedState(): Unit = {
       source = null
@@ -1055,28 +1058,6 @@ object Val {
         TailstrictModeDisabled
       )
 
-    override def asLazyArray: Array[Eval] = {
-      if ((arr ne null) || isConcatView) super.asLazyArray
-      else {
-        val len = _length
-        val result = new Array[Eval](len)
-        val f = func
-        val ip = indexPos
-        val p = callPos
-        val es = ev
-        var i = 0
-        while (i < len) {
-          val idx = physicalIndex(i)
-          val cached = cachedAtPhysicalIndex(idx)
-          result(i) =
-            if (cached != null) cached
-            else new LazyApply2(f, Val.cachedNum(ip, idx), source.eval(idx), p, es)
-          i += 1
-        }
-        installMaterialized(result)
-      }
-    }
-
     override protected def releaseCapturedState(): Unit = {
       source = null
       func = null
@@ -1103,28 +1084,6 @@ object Val {
 
     protected def computeAt(index: Int): Val =
       func.apply1(Val.cachedNum(indexPos, index), callPos)(ev, TailstrictModeDisabled)
-
-    override def asLazyArray: Array[Eval] = {
-      if ((arr ne null) || isConcatView) super.asLazyArray
-      else {
-        val len = _length
-        val result = new Array[Eval](len)
-        val f = func
-        val ip = indexPos
-        val p = callPos
-        val es = ev
-        var i = 0
-        while (i < len) {
-          val idx = physicalIndex(i)
-          val cached = cachedAtPhysicalIndex(idx)
-          result(i) =
-            if (cached != null) cached
-            else new LazyApply1(f, Val.cachedNum(ip, idx), p, es)
-          i += 1
-        }
-        installMaterialized(result)
-      }
-    }
 
     override protected def releaseCapturedState(): Unit = {
       func = null
