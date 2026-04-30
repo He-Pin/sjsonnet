@@ -135,16 +135,30 @@ object StringModule extends AbstractFunctionModule {
         case _ => Error.fail("Expected a number for len in substr, got " + len.value.prettyName)
       }
 
-      val unicodeLength = str.codePointCount(0, str.length)
-      val safeOffset = math.min(offset, unicodeLength)
-      val safeLength = math.min(length, unicodeLength - safeOffset)
-
-      if (safeLength <= 0) {
+      if (length <= 0) {
         Val.Str(pos, "")
       } else {
-        val startUtf16 = if (safeOffset == 0) 0 else str.offsetByCodePoints(0, safeOffset)
-        val endUtf16 = str.offsetByCodePoints(startUtf16, safeLength)
-        Val.Str(pos, str.substring(startUtf16, endUtf16))
+        val requestedEnd = offset.toLong + length.toLong
+        if (
+          requestedEnd <= str.length &&
+          StringUtils.utf16OffsetsAreCodePointOffsets(str, requestedEnd.toInt)
+        ) {
+          // Before the requested end, every UTF-16 offset is also a codepoint offset. This keeps
+          // the common ASCII/BMP path on substring without scanning the rest of a long string.
+          Val.Str(pos, str.substring(offset, requestedEnd.toInt))
+        } else {
+          val unicodeLength = str.codePointCount(0, str.length)
+          val safeOffset = math.min(offset, unicodeLength)
+          val safeLength = math.min(length, unicodeLength - safeOffset)
+
+          if (safeLength <= 0) {
+            Val.Str(pos, "")
+          } else {
+            val startUtf16 = if (safeOffset == 0) 0 else str.offsetByCodePoints(0, safeOffset)
+            val endUtf16 = str.offsetByCodePoints(startUtf16, safeLength)
+            Val.Str(pos, str.substring(startUtf16, endUtf16))
+          }
+        }
       }
     }
   }
@@ -209,6 +223,21 @@ object StringModule extends AbstractFunctionModule {
     }
   }
 
+  private object StringUtils {
+    @inline def utf16OffsetsAreCodePointOffsets(str: String): Boolean = {
+      utf16OffsetsAreCodePointOffsets(str, str.length)
+    }
+
+    @inline def utf16OffsetsAreCodePointOffsets(str: String, endExclusive: Int): Boolean = {
+      var i = 0
+      while (i < endExclusive) {
+        if (Character.isHighSurrogate(str.charAt(i))) return false
+        i += 1
+      }
+      true
+    }
+  }
+
   private object StripUtils {
     def codePointsSet(str: String): collection.Set[Int] = {
       val chars = Set.newBuilder[Int]
@@ -223,55 +252,32 @@ object StringModule extends AbstractFunctionModule {
     }
 
     /**
-     * Returns true if all characters in the string are BMP (Basic Multilingual Plane) characters —
-     * i.e. no surrogate pairs. This enables a much faster char-based strip path since charAt(i)
-     * gives the full code point.
+     * Optimized strip implementation for std.stripChars/lstripChars/rstripChars. Most strip sets
+     * are ASCII/BMP delimiters; handling them before building a boxed Set[Int] keeps the hot path
+     * allocation-light and lets the JVM inline the membership checks.
      */
-    @inline private def isAllBmp(str: String): Boolean = {
-      var i = 0
-      while (i < str.length) {
-        if (Character.isHighSurrogate(str.charAt(i))) return false
-        i += 1
+    def strip(str: String, chars: String, left: Boolean, right: Boolean): String = {
+      if (str.isEmpty || chars.isEmpty) return str
+
+      val single = singleBmpNonSurrogate(chars)
+      if (single >= 0) {
+        return stripSingleChar(str, single.toChar, left, right)
       }
-      true
+
+      val bmpSet = bmpNonSurrogateSet(chars)
+      if (bmpSet != null) {
+        return stripBmp(str, bmpSet, left, right)
+      }
+
+      unspecializedStrip(str, codePointsSet(chars), left, right)
     }
 
-    /**
-     * Optimized strip implementation with fast paths for common cases:
-     *   1. Single-char strip set (e.g. stripChars(s, "x")) — direct char comparison
-     *   2. BMP-only strings — charAt iteration instead of codePointAt/offsetByCodePoints
-     *   3. General case — falls back to codepoint-based iteration with Set lookup
-     */
     def unspecializedStrip(
         str: String,
         charsSet: collection.Set[Int],
         left: Boolean,
         right: Boolean): String = {
       if (str.isEmpty) return str
-
-      val strAllBmp = isAllBmp(str)
-
-      // Fast path: if the chars set has a single BMP character and the string has no surrogates,
-      // use direct charAt comparison (avoids Set lookup overhead entirely).
-      if (charsSet.size == 1) {
-        val ch = charsSet.head
-        if (ch < Character.MIN_SUPPLEMENTARY_CODE_POINT && strAllBmp) {
-          return stripSingleChar(str, ch.toChar, left, right)
-        }
-      }
-
-      // Medium path: if all chars are in BMP and string has no surrogates,
-      // use charAt-based iteration (avoids codePointAt/offsetByCodePoints overhead).
-      if (strAllBmp) {
-        var allBmp = true
-        val iter = charsSet.iterator
-        while (iter.hasNext && allBmp) {
-          if (iter.next() >= Character.MIN_SUPPLEMENTARY_CODE_POINT) allBmp = false
-        }
-        if (allBmp) {
-          return stripBmp(str, charsSet, left, right)
-        }
-      }
 
       // General case: full codepoint-based iteration (handles surrogate pairs)
       var start = 0
@@ -285,9 +291,25 @@ object StringModule extends AbstractFunctionModule {
       str.substring(start, end)
     }
 
+    private def singleBmpNonSurrogate(chars: String): Int =
+      if (chars.length == 1 && !Character.isSurrogate(chars.charAt(0))) chars.charAt(0).toInt
+      else -1
+
+    private def bmpNonSurrogateSet(chars: String): java.util.BitSet = {
+      val set = new java.util.BitSet(128)
+      var i = 0
+      while (i < chars.length) {
+        val ch = chars.charAt(i)
+        if (Character.isSurrogate(ch)) return null
+        set.set(ch.toInt)
+        i += 1
+      }
+      set
+    }
+
     /**
-     * Fast path for stripping a single BMP character from a BMP-only string. Avoids all
-     * Set/Map/boxed-Integer overhead.
+     * Fast path for stripping a single non-surrogate BMP character. Surrogate pairs in `str` are
+     * safe here: neither half can equal the non-surrogate delimiter.
      */
     private def stripSingleChar(str: String, ch: Char, left: Boolean, right: Boolean): String = {
       var start = 0
@@ -302,21 +324,21 @@ object StringModule extends AbstractFunctionModule {
     }
 
     /**
-     * Medium path for stripping BMP characters from a BMP-only string. Uses charAt() instead of
-     * codePointAt(), avoiding the surrogate pair logic.
+     * Medium path for non-surrogate BMP delimiter sets. BitSet avoids boxed Set[Int] lookups; valid
+     * surrogate pairs in `str` are not stripped because high/low surrogate chars are never in set.
      */
     private def stripBmp(
         str: String,
-        charsSet: collection.Set[Int],
+        charsSet: java.util.BitSet,
         left: Boolean,
         right: Boolean): String = {
       var start = 0
       var end = str.length
       if (left) {
-        while (start < end && charsSet.contains(str.charAt(start).toInt)) start += 1
+        while (start < end && charsSet.get(str.charAt(start).toInt)) start += 1
       }
       if (right) {
-        while (end > start && charsSet.contains(str.charAt(end - 1).toInt)) end -= 1
+        while (end > start && charsSet.get(str.charAt(end - 1).toInt)) end -= 1
       }
       str.substring(start, end)
     }
@@ -331,12 +353,11 @@ object StringModule extends AbstractFunctionModule {
    */
   private object StripChars extends Val.Builtin2("stripChars", "str", "chars") {
     def evalRhs(str: Eval, chars: Eval, ev: EvalScope, pos: Position): Val = {
-      val charsSet = StripUtils.codePointsSet(chars.value.asString)
       Val.Str(
         pos,
-        StripUtils.unspecializedStrip(
+        StripUtils.strip(
           str.value.asString,
-          charsSet,
+          chars.value.asString,
           left = true,
           right = true
         )
@@ -353,12 +374,11 @@ object StringModule extends AbstractFunctionModule {
    */
   private object LStripChars extends Val.Builtin2("lstripChars", "str", "chars") {
     def evalRhs(str: Eval, chars: Eval, ev: EvalScope, pos: Position): Val = {
-      val charsSet = StripUtils.codePointsSet(chars.value.asString)
       Val.Str(
         pos,
-        StripUtils.unspecializedStrip(
+        StripUtils.strip(
           str.value.asString,
-          charsSet,
+          chars.value.asString,
           left = true,
           right = false
         )
@@ -375,12 +395,11 @@ object StringModule extends AbstractFunctionModule {
    */
   private object RStripChars extends Val.Builtin2("rstripChars", "str", "chars") {
     def evalRhs(str: Eval, chars: Eval, ev: EvalScope, pos: Position): Val = {
-      val charsSet = StripUtils.codePointsSet(chars.value.asString)
       Val.Str(
         pos,
-        StripUtils.unspecializedStrip(
+        StripUtils.strip(
           str.value.asString,
-          charsSet,
+          chars.value.asString,
           left = false,
           right = true
         )
@@ -575,19 +594,42 @@ object StringModule extends AbstractFunctionModule {
   }
 
   private def parseNat(str: String, start: Int, base: Int, baseName: String): Double = {
+    if (base == 16) parseHexNat(str, start, baseName)
+    else parseDigitNat(str, start, base, baseName)
+  }
+
+  private def parseDigitNat(str: String, start: Int, base: Int, baseName: String): Double = {
     var acc = 0.0
     var i = start
     while (i < str.length) {
-      val code = str.codePointAt(i)
-      val digit =
-        if (code >= 'a') code - 'a' + 10
-        else if (code >= 'A') code - 'A' + 10
-        else code - '0'
+      // Decimal and octal only accept ASCII digits; charAt keeps the hot path branch-light and
+      // avoids the codePointAt/charCount work that always leads to an error for non-ASCII input.
+      val digit = str.charAt(i) - '0'
       if (digit < 0 || digit >= base) {
         Error.fail("Cannot parse '" + str + "' as an integer in " + baseName)
       }
       acc = base * acc + digit
-      i += Character.charCount(code)
+      i += 1
+    }
+    acc
+  }
+
+  private def parseHexNat(str: String, start: Int, baseName: String): Double = {
+    var acc = 0.0
+    var i = start
+    while (i < str.length) {
+      val code = str.charAt(i)
+      // Keep the official digit mapping used by go-jsonnet/C++ jsonnet, where ':'..'?' map to
+      // 10..15 in addition to A-F/a-f.
+      val digit =
+        if (code >= 'a') code - 'a' + 10
+        else if (code >= 'A') code - 'A' + 10
+        else code - '0'
+      if (digit < 0 || digit >= 16) {
+        Error.fail("Cannot parse '" + str + "' as an integer in " + baseName)
+      }
+      acc = 16.0 * acc + digit
+      i += 1
     }
     acc
   }
@@ -785,17 +827,27 @@ object StringModule extends AbstractFunctionModule {
         else {
           val indices = new mutable.ArrayBuilder.ofRef[Val.Num]
 
-          // Compute codepoint indices incrementally, avoiding an O(n) calculation for each match.
-          var prevCharIndex = 0
-          var prevCodePointIndex = 0
+          if (StringUtils.utf16OffsetsAreCodePointOffsets(str)) {
+            // String.indexOf returns UTF-16 offsets. For BMP-only strings those are already
+            // Jsonnet codepoint offsets, so avoid a codePointCount scan for every match.
+            while (0 <= matchIndex && matchIndex < str.length) {
+              indices.+=(Val.cachedNum(pos, matchIndex.toDouble))
+              matchIndex = str.indexOf(pat, matchIndex + 1)
+            }
+          } else {
+            // Compute codepoint indices incrementally, avoiding an O(n) calculation for each match.
+            var prevCharIndex = 0
+            var prevCodePointIndex = 0
 
-          while (0 <= matchIndex && matchIndex < str.length) {
-            val codePointIndex = prevCodePointIndex + str.codePointCount(prevCharIndex, matchIndex)
-            indices.+=(Val.cachedNum(pos, codePointIndex.toDouble))
+            while (0 <= matchIndex && matchIndex < str.length) {
+              val codePointIndex =
+                prevCodePointIndex + str.codePointCount(prevCharIndex, matchIndex)
+              indices.+=(Val.cachedNum(pos, codePointIndex.toDouble))
 
-            prevCharIndex = matchIndex
-            prevCodePointIndex = codePointIndex
-            matchIndex = str.indexOf(pat, matchIndex + 1)
+              prevCharIndex = matchIndex
+              prevCodePointIndex = codePointIndex
+              matchIndex = str.indexOf(pat, matchIndex + 1)
+            }
           }
           Val.Arr(pos, indices.result())
         }

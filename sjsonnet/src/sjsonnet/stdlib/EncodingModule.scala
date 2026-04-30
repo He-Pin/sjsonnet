@@ -1,5 +1,7 @@
 package sjsonnet.stdlib
 
+import java.nio.charset.StandardCharsets.UTF_8
+
 import sjsonnet._
 import sjsonnet.functions.AbstractFunctionModule
 
@@ -47,7 +49,7 @@ object EncodingModule extends AbstractFunctionModule {
     builtin("base64", "input") { (pos, _, input: Val) =>
       (input match {
         case Val.Str(_, value) =>
-          Val.Str.asciiSafe(pos, PlatformBase64.encodeToString(value.getBytes("UTF-8")))
+          Val.Str.asciiSafe(pos, PlatformBase64.encodeToString(value.getBytes(UTF_8)))
         case ba: Val.ByteArr =>
           Val.Str.asciiSafe(pos, PlatformBase64.encodeToString(ba.rawBytes))
         case arr: Val.Arr =>
@@ -86,7 +88,7 @@ object EncodingModule extends AbstractFunctionModule {
      */
     builtin("base64Decode", "str") { (_, _, str: String) =>
       try {
-        new String(PlatformBase64.decode(str), "UTF-8")
+        new String(PlatformBase64.decode(str), UTF_8)
       } catch {
         case e: IllegalArgumentException =>
           Error.fail("Invalid base64 string: " + e.getMessage)
