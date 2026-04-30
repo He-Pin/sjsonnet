@@ -578,6 +578,10 @@ object Val {
       }
     }
 
+    private[sjsonnet] final def directBackingArray: Array[Eval] =
+      if (!isConcatView && !_reversed && (arr ne null)) arr.asInstanceOf[Array[Eval]]
+      else null
+
     /**
      * If both this and other are ConcatViews sharing the same left array, return the shared prefix
      * length. Otherwise return 0. Used by compare/equal to skip identical prefix elements entirely,
@@ -1109,18 +1113,21 @@ object Val {
     _length = size
 
     // After materialization arr becomes non-null; delegate to parent Arr logic.
-    @inline private def isMaterialized: Boolean = arr ne null
+    @inline private[sjsonnet] def isMaterialized: Boolean = arr ne null
+
+    @inline private[sjsonnet] def isCompactRange: Boolean = !isMaterialized && !isConcatView
+
+    @inline private[sjsonnet] def doubleAt(i: Int): Double =
+      if (_reversed) (rangeFrom - i).toDouble else (rangeFrom + i).toDouble
 
     override def value(i: Int): Val = {
       if (isMaterialized || isConcatView) super.value(i)
-      else if (_reversed) Val.cachedNum(pos, rangeFrom - i)
-      else Val.cachedNum(pos, rangeFrom + i)
+      else Val.cachedNum(pos, doubleAt(i))
     }
 
     override def eval(i: Int): Eval = {
       if (isMaterialized || isConcatView) super.eval(i)
-      else if (_reversed) Val.cachedNum(pos, rangeFrom - i)
-      else Val.cachedNum(pos, rangeFrom + i)
+      else Val.cachedNum(pos, doubleAt(i))
     }
 
     override def asLazyArray: Array[Eval] = {

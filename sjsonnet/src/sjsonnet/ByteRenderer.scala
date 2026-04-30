@@ -422,8 +422,17 @@ class ByteRenderer(out: OutputStream = new java.io.ByteArrayOutputStream(), inde
     depth += 1
     resetEmpty()
 
-    // Fast path for byte-backed arrays: emit numbers directly without per-element dispatch
+    // Fast paths for compact numeric arrays: emit numbers directly without per-element dispatch.
     xs match {
+      case range: Val.RangeArr if range.isCompactRange =>
+        var i = 0
+        while (i < len) {
+          markNonEmpty()
+          flushBuffer()
+          renderDouble(range.doubleAt(i))
+          commaBuffered = true
+          i += 1
+        }
       case ba: Val.ByteArr =>
         val bytes = ba.rawBytes
         var i = 0

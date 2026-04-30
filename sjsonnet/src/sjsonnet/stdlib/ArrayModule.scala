@@ -545,11 +545,14 @@ object ArrayModule extends AbstractFunctionModule {
     (e.lhs, e.rhs) match {
       // Pattern: acc + elem
       case (l: Expr.ValidId, r: Expr.ValidId) if l.nameIdx == base && r.nameIdx == base + 1 =>
-        val sb = new java.lang.StringBuilder(initStr.length + arr.length * 8)
+        val direct = arr.directBackingArray
+        val len = if (direct == null) arr.length else direct.length
+        val sb = new java.lang.StringBuilder(initStr.length + len * 8)
         sb.append(initStr)
         var i = 0
-        while (i < arr.length) {
-          arr.value(i) match {
+        while (i < len) {
+          val elem = if (direct == null) arr.value(i) else direct(i).value
+          elem match {
             case s: Val.Str => sb.append(s.str)
             case v          => sb.append(Materializer.stringify(v)(ev))
           }
@@ -563,14 +566,17 @@ object ArrayModule extends AbstractFunctionModule {
         (inner.lhs, inner.rhs) match {
           case (l: Expr.ValidId, sep: Val.Str) if l.nameIdx == base =>
             val sepStr = sep.str
+            val direct = arr.directBackingArray
+            val len = if (direct == null) arr.length else direct.length
             val sb =
-              new java.lang.StringBuilder(initStr.length + arr.length * (sepStr.length + 8))
+              new java.lang.StringBuilder(initStr.length + len * (sepStr.length + 8))
             sb.append(initStr)
             var i = 0
-            while (i < arr.length) {
+            while (i < len) {
               if (skipSepForFirst == null || i > 0 || initStr != skipSepForFirst)
                 sb.append(sepStr)
-              arr.value(i) match {
+              val elem = if (direct == null) arr.value(i) else direct(i).value
+              elem match {
                 case s: Val.Str => sb.append(s.str)
                 case v          => sb.append(Materializer.stringify(v)(ev))
               }
@@ -653,11 +659,14 @@ object ArrayModule extends AbstractFunctionModule {
             case _ =>
           }
           var current = initVal
+          val direct = arr.directBackingArray
+          val len = if (direct == null) arr.length else direct.length
           val noOff = pos.noOffset
           var i = 0
-          while (i < arr.length) {
+          while (i < len) {
             val c = current
-            current = func.apply2(c, arr.eval(i), noOff)(ev, TailstrictModeDisabled)
+            val elem = if (direct == null) arr.eval(i) else direct(i)
+            current = func.apply2(c, elem, noOff)(ev, TailstrictModeDisabled)
             i += 1
           }
           current
@@ -701,10 +710,12 @@ object ArrayModule extends AbstractFunctionModule {
       arr.value match {
         case arr: Val.Arr =>
           var current = init.value
-          var i = arr.length - 1
+          val direct = arr.directBackingArray
+          var i = (if (direct == null) arr.length else direct.length) - 1
           while (i >= 0) {
             val c = current
-            current = func.apply2(arr.eval(i), c, pos.noOffset)(ev, TailstrictModeDisabled)
+            val elem = if (direct == null) arr.eval(i) else direct(i)
+            current = func.apply2(elem, c, pos.noOffset)(ev, TailstrictModeDisabled)
             i -= 1
           }
           current
