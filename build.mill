@@ -111,6 +111,7 @@ object bench extends ScalaModule with JmhModule with ScalafmtModule {
     this.moduleDir / "resources" / "bug_suite",
     this.moduleDir / "resources" / "cpp_suite",
     this.moduleDir / "resources" / "go_suite",
+    this.moduleDir / "resources" / "jdk17_suite",
     this.moduleDir / "resources" / "sjsonnet_suite"
   )
 

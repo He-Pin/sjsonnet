@@ -1,6 +1,7 @@
 package sjsonnet
 
 import java.io.{ByteArrayOutputStream, File}
+import java.nio.charset.StandardCharsets.UTF_8
 import java.util
 import java.util.Base64
 import java.util.zip.GZIPOutputStream
@@ -9,6 +10,24 @@ import scala.collection.mutable
 import org.virtuslab.yaml.*
 
 object Platform {
+  private val hexChars = "0123456789abcdef".toCharArray
+
+  private def repeatCapacity(s: String, count: Int): Int =
+    if (count > 0 && s.length <= Int.MaxValue / count) s.length * count else 0
+
+  def repeatString(s: String, count: Int): String = {
+    if (count <= 0 || s.isEmpty) ""
+    else {
+      val builder = new StringBuilder(repeatCapacity(s, count))
+      var i = 0
+      while (i < count) {
+        builder.append(s)
+        i += 1
+      }
+      builder.toString()
+    }
+  }
+
   def gzipBytes(b: Array[Byte]): String = {
     val outputStream: ByteArrayOutputStream = new ByteArrayOutputStream(b.length)
     val gzip: GZIPOutputStream = new GZIPOutputStream(outputStream)
@@ -22,7 +41,7 @@ object Platform {
   }
 
   def gzipString(s: String): String = {
-    gzipBytes(s.getBytes())
+    gzipBytes(s.getBytes(UTF_8))
   }
 
   def xzBytes(s: Array[Byte], compressionLevel: Option[Int]): String = {
@@ -140,13 +159,22 @@ object Platform {
     result.mkString("\n")
   }
 
-  private def computeHash(algorithm: String, s: String) = {
-    java.security.MessageDigest
-      .getInstance(algorithm)
-      .digest(s.getBytes("UTF-8"))
-      .map { b => String.format("%02x", (b & 0xff).asInstanceOf[Integer]) }
-      .mkString
+  private def bytesToHex(bytes: Array[Byte]): String = {
+    val out = new Array[Char](bytes.length * 2)
+    var i = 0
+    var j = 0
+    while (i < bytes.length) {
+      val b = bytes(i) & 0xff
+      out(j) = hexChars(b >>> 4)
+      out(j + 1) = hexChars(b & 0x0f)
+      i += 1
+      j += 2
+    }
+    new String(out)
   }
+
+  private def computeHash(algorithm: String, s: String): String =
+    bytesToHex(java.security.MessageDigest.getInstance(algorithm).digest(s.getBytes(UTF_8)))
 
   def md5(s: String): String = computeHash("MD5", s)
 

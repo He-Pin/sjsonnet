@@ -23,7 +23,7 @@ object DecimalFormat {
     val sign = if (n < 0) "-" else ""
     val absN = math.abs(n)
     val nWidth = if (absN == 0) 1 else Math.log10(absN.toDouble).toInt + 1
-    sign + "0" * (targetWidth - nWidth) + absN
+    sign + Platform.repeatString("0", targetWidth - nWidth) + absN
   }
 
   private def rightPad(n0: Long, minWidth: Int, maxWidth: Int): String = {
@@ -32,7 +32,7 @@ object DecimalFormat {
       val n = (n0 / Math.pow(10, trailingZeroes(n0))).toInt
       assert(n == math.abs(n))
       val nWidth = if (n == 0) 1 else Math.log10(n).toInt + 1
-      ("" + n + "0" * (minWidth - nWidth)).take(maxWidth)
+      ("" + n + Platform.repeatString("0", minWidth - nWidth)).take(maxWidth)
     }
   }
 

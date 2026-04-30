@@ -1,0 +1,11 @@
+{
+   "decimalLen": 4616,
+   "decimalTail": "00000512",
+   "hexLen": 5642,
+   "hexTail": "0000000200",
+   "leftLen": 2687,
+   "leftTail": "w127                ",
+   "repeatedLen": 8192,
+   "rightLen": 2687,
+   "rightTail": "                w127"
+}

@@ -861,13 +861,7 @@ object ArrayModule extends AbstractFunctionModule {
       }
       val res: Val = what match {
         case Val.Str(_, str) =>
-          val builder = new StringBuilder(str.length * count)
-          var i = 0
-          while (i < count) {
-            builder.append(str)
-            i += 1
-          }
-          Val.Str(pos, builder.toString())
+          Val.Str(pos, Platform.repeatString(str, count))
         case a: Val.Arr =>
           if (a.length.toLong * count.toLong > Int.MaxValue)
             Error.fail("array too large", pos)(ev)
