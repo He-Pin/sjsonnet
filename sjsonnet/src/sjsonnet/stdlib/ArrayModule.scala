@@ -276,27 +276,13 @@ object ArrayModule extends AbstractFunctionModule {
       val arg = arr.value
       arg match {
         case Val.Str(_, str) => evalStr(func, str, ev, pos.noOffset)
-        case _               => evalArr(func, arg.asArr, ev, pos)
+        case a: Val.Arr      => Val.Arr.mapped(pos, a, func, pos.noOffset, ev)
+        case _               => Val.Arr.mapped(pos, arg.asArr, func, pos.noOffset, ev)
       }
-    }
-
-    private def evalArr(_func: Val.Func, arg: Val.Arr, ev: EvalScope, pos: Position): Val.Arr = {
-      // Keep map as per-element LazyApply1 thunks. On the JVM this is faster for the common
-      // "map then fully consume" path than an indexed view with a shared state side table, while
-      // still preserving lazy element evaluation.
-      val noOff = pos.noOffset
-      val len = arg.length
-      val result = new Array[Eval](len)
-      var i = 0
-      while (i < len) {
-        result(i) = new LazyApply1(_func, arg.eval(i), noOff, ev)
-        i += 1
-      }
-      Val.Arr(pos, result)
     }
 
     private def evalStr(_func: Val.Func, arg: String, ev: EvalScope, pos: Position): Val.Arr = {
-      evalArr(_func, stringChars(pos, arg), ev, pos)
+      Val.Arr.mapped(pos, stringChars(pos, arg), _func, pos.noOffset, ev)
     }
   }
 
@@ -313,19 +299,10 @@ object ArrayModule extends AbstractFunctionModule {
     def evalRhs(_func: Eval, _arr: Eval, ev: EvalScope, pos: Position): Val = {
       val func = _func.value.asFunc
       val arr = _arr.value match {
-        case Val.Str(_, str) => stringChars(pos, str).asLazyArray
-        case v               => v.asArr.asLazyArray
+        case Val.Str(_, str) => stringChars(pos, str)
+        case v               => v.asArr
       }
-      val a = new Array[Eval](arr.length)
-      val noOff = pos.noOffset
-      var i = 0
-      while (i < a.length) {
-        val x = arr(i)
-        val idx = Val.cachedNum(pos, i)
-        a(i) = new LazyApply2(func, idx, x, noOff, ev)
-        i += 1
-      }
-      Val.Arr(pos, a)
+      Val.Arr.mappedWithIndex(pos, arr, func, pos, pos.noOffset, ev)
     }
   }
 
@@ -416,8 +393,9 @@ object ArrayModule extends AbstractFunctionModule {
    */
   private object Reverse extends Val.Builtin1("reverse", "arrs") {
     def evalRhs(arrs: Eval, ev: EvalScope, pos: Position): Val = {
-      // Zero-copy reverse: create a reversed view sharing the same backing array.
-      // This avoids allocating and copying a new array, reducing GC pressure.
+      // Most arrays reverse as a zero-copy view that shares the same backing array. Array-level
+      // lazy views may first materialize thunks so the original and reversed arrays preserve
+      // shared callback evaluation semantics.
       arrs.value.asArr.reversed(pos)
     }
   }
@@ -886,27 +864,17 @@ object ArrayModule extends AbstractFunctionModule {
      * initialize.
      */
     builtin("makeArray", "sz", "func") { (pos, ev, size: Val, func: Val.Func) =>
-      Val.Arr(
-        pos, {
-          val sz = size.cast[Val.Num].asPositiveInt
-          val a = new Array[Eval](sz)
-          val body = func.bodyExpr
-          if (func.params.names.length == 1 && body != null && body.isInstanceOf[Val.Literal]) {
-            // Function body is a constant (e.g. `function(_) 'x'`).
-            // Skip lazy thunk + Val.Num(index) allocation per element.
-            val constVal = body.asInstanceOf[Val]
-            java.util.Arrays.fill(a.asInstanceOf[Array[AnyRef]], constVal)
-          } else {
-            val noOff = pos.noOffset
-            var i = 0
-            while (i < sz) {
-              a(i) = new LazyApply1(func, Val.cachedNum(pos, i), noOff, ev)
-              i += 1
-            }
-          }
-          a
-        }
-      )
+      val sz = size.cast[Val.Num].asPositiveInt
+      val body = func.bodyExpr
+      if (func.params.names.length == 1 && body != null && body.isInstanceOf[Val.Literal]) {
+        // Function body is a constant (e.g. `function(_) 'x'`).
+        // Keep the eager shared-value array: it is smaller and faster than a lazy view here.
+        val a = new Array[Eval](sz)
+        java.util.Arrays.fill(a.asInstanceOf[Array[AnyRef]], body.asInstanceOf[Val])
+        Val.Arr(pos, a)
+      } else {
+        Val.Arr.makeArray(pos, sz, func, pos, pos.noOffset, ev)
+      }
     },
     /**
      * [[https://jsonnet.org/ref/stdlib.html#std-contains std.contains(arr, elem)]].

@@ -491,6 +491,29 @@ object Val {
     private[sjsonnet] def valTag: Byte = TAG_NUM
   }
 
+  /**
+   * Lightweight element thunk for array-level lazy views.
+   *
+   * WHY: MappedArr/MakeArrayArr store the callback once per array, not once per element. Some older
+   * call sites still ask for an Array[Eval] via asLazyArray; this thunk bridges that API without
+   * reintroducing a full LazyApply1/LazyApply2 payload for every element.
+   */
+  private final class LazyArrayElement(private var owner: Arr, private val index: Int)
+      extends Lazy {
+    private var cached: Val = _
+
+    def value: Val = {
+      val c = cached
+      if (c != null) c
+      else {
+        val r = owner.value(index)
+        cached = r
+        owner = null
+        r
+      }
+    }
+  }
+
   class Arr(var pos: Position, private[Val] var arr: Array[? <: Eval]) extends Literal {
     def prettyName = "array"
     private[sjsonnet] def valTag: Byte = TAG_ARR
@@ -835,6 +858,283 @@ object Val {
   }
 
   /**
+   * Base class for array-level lazy views.
+   *
+   * The existing LazyApply1/LazyApply2 representation stores `(func, arg, pos, ev)` in every array
+   * element. That is good for generic laziness but expensive for bulk-producing stdlib operations.
+   * This class keeps the callback and evaluation context once per array and caches computed values
+   * in a compact Array[Val]. When legacy APIs need Array[Eval], it returns lightweight
+   * LazyArrayElement wrappers that point back to this view.
+   */
+  private abstract class LazyViewArr(pos0: Position, size: Int) extends Arr(pos0, null) {
+    _length = size
+
+    private[this] var values: Array[Val] = _
+    private[this] var evals: Array[Eval] = _
+    private[this] var computedCount: Int = 0
+
+    protected def computeAt(index: Int): Val
+
+    /** Called once all values are computed so subclasses can release captured evaluator state. */
+    protected def releaseCapturedState(): Unit = ()
+
+    @inline protected final def physicalIndex(i: Int): Int =
+      if (_reversed) _length - 1 - i else i
+
+    protected final def cachedAtPhysicalIndex(i: Int): Val = {
+      val cache = values
+      if (cache == null) null else cache(i)
+    }
+
+    protected final def installMaterialized(result: Array[Eval]): Array[Eval] = {
+      arr = result
+      _reversed = false
+      values = null
+      evals = null
+      releaseCapturedState()
+      result
+    }
+
+    private[this] def valueCache: Array[Val] = {
+      var cache = values
+      if (cache == null) {
+        cache = new Array[Val](_length)
+        values = cache
+      }
+      cache
+    }
+
+    override final def value(i: Int): Val = {
+      if ((arr ne null) || isConcatView) super.value(i)
+      else {
+        val idx = physicalIndex(i)
+        val cache = valueCache
+        val c = cache(idx)
+        if (c != null) c
+        else {
+          val r = computeAt(idx)
+          cache(idx) = r
+          computedCount += 1
+          if (computedCount == _length) {
+            arr = cache.asInstanceOf[Array[Eval]]
+            values = null
+            evals = null
+            releaseCapturedState()
+          }
+          r
+        }
+      }
+    }
+
+    override final def eval(i: Int): Eval = {
+      if ((arr ne null) || isConcatView) super.eval(i)
+      else {
+        val cache = values
+        if (cache != null) {
+          val c = cache(physicalIndex(i))
+          if (c != null) return c
+        }
+        var es = evals
+        if (es == null) {
+          es = new Array[Eval](_length)
+          evals = es
+        }
+        var e = es(i)
+        if (e == null) {
+          e = new LazyArrayElement(this, i)
+          es(i) = e
+        }
+        e
+      }
+    }
+
+    override def asLazyArray: Array[Eval] = {
+      if ((arr ne null) || isConcatView) super.asLazyArray
+      else {
+        val len = _length
+        var es = evals
+        if (es == null) {
+          es = new Array[Eval](len)
+          evals = es
+        }
+        var i = 0
+        while (i < len) {
+          if (es(i) == null) {
+            val cache = values
+            val cached =
+              if (cache == null) null
+              else cache(physicalIndex(i))
+            es(i) =
+              if (cached != null) cached
+              else new LazyArrayElement(this, i)
+          }
+          i += 1
+        }
+        es
+      }
+    }
+
+    override def reversed(newPos: Position): Arr = {
+      if ((arr ne null) || isConcatView) super.reversed(newPos)
+      else {
+        // Preserve the old Array[Eval] sharing contract for reversed arrays. The original and
+        // reversed views must point at the same element thunks so traces/native callbacks are not
+        // duplicated when the same logical element is reached through both arrays. This accepts
+        // O(n) materialization for std.reverse(lazyView) to keep user-observable laziness stable.
+        asLazyArray
+        super.reversed(newPos)
+      }
+    }
+  }
+
+  /**
+   * Lazy view for std.map(func, arr).
+   *
+   * WHY: Large maps are often consumed by indexing, sorting, folding, or rendering. Deferring at
+   * the array level avoids allocating one LazyApply1 per source element and lets direct value(i)
+   * users run through a small monomorphic loop.
+   */
+  private final class MappedArr(
+      pos0: Position,
+      private var source: Arr,
+      private var func: Func,
+      private var callPos: Position,
+      private var ev: EvalScope)
+      extends LazyViewArr(pos0, source.length) {
+
+    protected def computeAt(index: Int): Val =
+      func.apply1(source.eval(index), callPos)(ev, TailstrictModeDisabled)
+
+    override def asLazyArray: Array[Eval] = {
+      if ((arr ne null) || isConcatView) super.asLazyArray
+      else {
+        val len = _length
+        val result = new Array[Eval](len)
+        val f = func
+        val p = callPos
+        val es = ev
+        var i = 0
+        while (i < len) {
+          val idx = physicalIndex(i)
+          val cached = cachedAtPhysicalIndex(idx)
+          result(i) =
+            if (cached != null) cached
+            else new LazyApply1(f, source.eval(idx), p, es)
+          i += 1
+        }
+        installMaterialized(result)
+      }
+    }
+
+    override protected def releaseCapturedState(): Unit = {
+      source = null
+      func = null
+      callPos = null
+      ev = null
+    }
+  }
+
+  /**
+   * Lazy view for std.mapWithIndex(func, arr).
+   *
+   * The callback index is the original logical map index. Reversing this array reverses the mapped
+   * results, not the indices passed to the callback, matching the eager Array[LazyApply2] behavior.
+   */
+  private final class MappedWithIndexArr(
+      pos0: Position,
+      private var source: Arr,
+      private var func: Func,
+      private var indexPos: Position,
+      private var callPos: Position,
+      private var ev: EvalScope)
+      extends LazyViewArr(pos0, source.length) {
+
+    protected def computeAt(index: Int): Val =
+      func.apply2(Val.cachedNum(indexPos, index), source.eval(index), callPos)(
+        ev,
+        TailstrictModeDisabled
+      )
+
+    override def asLazyArray: Array[Eval] = {
+      if ((arr ne null) || isConcatView) super.asLazyArray
+      else {
+        val len = _length
+        val result = new Array[Eval](len)
+        val f = func
+        val ip = indexPos
+        val p = callPos
+        val es = ev
+        var i = 0
+        while (i < len) {
+          val idx = physicalIndex(i)
+          val cached = cachedAtPhysicalIndex(idx)
+          result(i) =
+            if (cached != null) cached
+            else new LazyApply2(f, Val.cachedNum(ip, idx), source.eval(idx), p, es)
+          i += 1
+        }
+        installMaterialized(result)
+      }
+    }
+
+    override protected def releaseCapturedState(): Unit = {
+      source = null
+      func = null
+      indexPos = null
+      callPos = null
+      ev = null
+    }
+  }
+
+  /**
+   * Lazy view for std.makeArray(sz, func).
+   *
+   * This removes the previous O(sz) LazyApply1 allocation for non-constant callbacks. The index
+   * value is still produced with Val.cachedNum, so small indices stay allocation-free.
+   */
+  private final class MakeArrayArr(
+      pos0: Position,
+      size: Int,
+      private var func: Func,
+      private var indexPos: Position,
+      private var callPos: Position,
+      private var ev: EvalScope)
+      extends LazyViewArr(pos0, size) {
+
+    protected def computeAt(index: Int): Val =
+      func.apply1(Val.cachedNum(indexPos, index), callPos)(ev, TailstrictModeDisabled)
+
+    override def asLazyArray: Array[Eval] = {
+      if ((arr ne null) || isConcatView) super.asLazyArray
+      else {
+        val len = _length
+        val result = new Array[Eval](len)
+        val f = func
+        val ip = indexPos
+        val p = callPos
+        val es = ev
+        var i = 0
+        while (i < len) {
+          val idx = physicalIndex(i)
+          val cached = cachedAtPhysicalIndex(idx)
+          result(i) =
+            if (cached != null) cached
+            else new LazyApply1(f, Val.cachedNum(ip, idx), p, es)
+          i += 1
+        }
+        installMaterialized(result)
+      }
+    }
+
+    override protected def releaseCapturedState(): Unit = {
+      func = null
+      indexPos = null
+      callPos = null
+      ev = null
+    }
+  }
+
+  /**
    * Lazy range array representing the integer sequence [from, from+1, ..., from+size-1]. Separate
    * subclass keeps the `rangeFrom` field out of regular `Arr` instances, saving ~9 bytes per
    * non-range array (boolean + int + padding).
@@ -970,6 +1270,56 @@ object Val {
       if (count == 0 || source.length == 0) Arr(pos, EMPTY_EVAL_ARRAY)
       else new RepeatedArr(pos, source, count)
 
+    def mapped(pos: Position, source: Arr, func: Func, callPos: Position, ev: EvalScope): Arr =
+      if (source.length == 0) Arr(pos, EMPTY_EVAL_ARRAY)
+      else if (source.length < LAZY_VIEW_THRESHOLD) {
+        val src = source.asLazyArray
+        val result = new Array[Eval](src.length)
+        var i = 0
+        while (i < src.length) {
+          result(i) = new LazyApply1(func, src(i), callPos, ev)
+          i += 1
+        }
+        Arr(pos, result)
+      } else new MappedArr(pos, source, func, callPos, ev)
+
+    def mappedWithIndex(
+        pos: Position,
+        source: Arr,
+        func: Func,
+        indexPos: Position,
+        callPos: Position,
+        ev: EvalScope): Arr =
+      if (source.length == 0) Arr(pos, EMPTY_EVAL_ARRAY)
+      else if (source.length < LAZY_VIEW_THRESHOLD) {
+        val src = source.asLazyArray
+        val result = new Array[Eval](src.length)
+        var i = 0
+        while (i < src.length) {
+          result(i) = new LazyApply2(func, Val.cachedNum(indexPos, i), src(i), callPos, ev)
+          i += 1
+        }
+        Arr(pos, result)
+      } else new MappedWithIndexArr(pos, source, func, indexPos, callPos, ev)
+
+    def makeArray(
+        pos: Position,
+        size: Int,
+        func: Func,
+        indexPos: Position,
+        callPos: Position,
+        ev: EvalScope): Arr =
+      if (size == 0) Arr(pos, EMPTY_EVAL_ARRAY)
+      else if (size < LAZY_VIEW_THRESHOLD) {
+        val result = new Array[Eval](size)
+        var i = 0
+        while (i < size) {
+          result(i) = new LazyApply1(func, Val.cachedNum(indexPos, i), callPos, ev)
+          i += 1
+        }
+        Arr(pos, result)
+      } else new MakeArrayArr(pos, size, func, indexPos, callPos, ev)
+
     /** Create a byte-backed array from raw bytes (e.g. base64DecodeBytes output). */
     def fromBytes(pos: Position, bytes: Array[Byte]): Arr = new ByteArr(pos, bytes)
 
@@ -988,6 +1338,15 @@ object Val {
      * overhead of virtual dispatch outweighs the copy savings.
      */
     val LAZY_CONCAT_THRESHOLD = 256
+
+    /**
+     * Below this size, the old flat Array[LazyApply*] representation is usually faster on the JVM:
+     * it is monomorphic after materialization and most stdlib consumers walk the whole array. Lazy
+     * views pay off for large arrays where avoiding thousands of eagerly allocated thunks matters
+     * or callers only force a small suffix/prefix.
+     */
+    val LAZY_VIEW_THRESHOLD = 4096
+
     private[sjsonnet] val EMPTY_EVAL_ARRAY: Array[Eval] = Array.empty[Eval]
   }
 
