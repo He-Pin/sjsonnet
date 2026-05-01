@@ -1,5 +1,7 @@
 package sjsonnet.stdlib
 
+import java.nio.charset.StandardCharsets.UTF_8
+
 import sjsonnet._
 import sjsonnet.functions.AbstractFunctionModule
 
