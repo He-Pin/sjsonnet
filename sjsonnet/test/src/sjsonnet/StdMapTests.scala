@@ -14,6 +14,8 @@ object StdMapTests extends TestSuite {
 
       // Test lazy evaluation
       eval("std.map(function(x) assert x != 'A'; x + x, 'AB')[1]") ==> ujson.Str("BB")
+      eval("std.map(function(x) x, [error 'unused', 1])[1]") ==> ujson.Num(1)
+      eval("local f = error 'unused'; std.map(function(x) f(f(x)), [])") ==> ujson.Arr()
 
       // Test returning arbitrary values from the mapping function
       eval("std.map(function(x) std.codepoint(x), 'AB')") ==> ujson.Arr(65, 66)

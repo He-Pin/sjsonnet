@@ -264,15 +264,59 @@ object ObjectModule extends AbstractFunctionModule {
       pos: Position,
       ev: EvalScope,
       v1: Val.Obj,
-      keys: Array[String]): Val.Arr = {
-    val result = new Array[Eval](keys.length)
-    var i = 0
-    while (i < keys.length) {
+      keys: Array[String]): Val.Arr =
+    new ObjectValuesArr(pos, v1, keys, ev)
+
+  private final class ObjectValuesArr(
+      pos0: Position,
+      private[this] val source: Val.Obj,
+      private[this] val keys: Array[String],
+      private[this] val ev: EvalScope)
+      extends Val.LazyIndexedArr(pos0, keys.length) {
+    private[this] val fieldPos = pos0.noOffset
+
+    protected def computeValue(i: Int): Val =
+      source.value(keys(i), fieldPos)(ev)
+
+    protected def errorScope: EvalErrorScope = ev
+  }
+
+  private final class ObjectKeysValuesArr(
+      pos0: Position,
+      private[this] val source: Val.Obj,
+      private[this] val keys: Array[String],
+      private[this] val ev: EvalScope)
+      extends Val.LazyIndexedArr(pos0, keys.length) {
+    private[this] val fieldPos = pos0.fileScope.noOffsetPos
+
+    protected def computeValue(i: Int): Val = {
       val k = keys(i)
-      result(i) = new LazyFunc(() => v1.value(k, pos.noOffset)(ev))
-      i += 1
+      // Keep the generated object's value field lazy. Callers often inspect only key fields after
+      // objectKeysValues; forcing every source field here defeats Jsonnet's object-field laziness and
+      // creates avoidable work on large objects.
+      Val.Obj.mk(
+        fieldPos,
+        "key" -> new Val.Obj.ConstMember(false, Visibility.Normal, Val.Str(fieldPos, k)),
+        "value" -> new ObjectKeyValueMember(source, k, fieldPos, ev)
+      )
     }
-    Val.Arr(pos, result)
+
+    protected def errorScope: EvalErrorScope = ev
+  }
+
+  private final class ObjectKeyValueMember(
+      private[this] val source: Val.Obj,
+      private[this] val key: String,
+      private[this] val pos: Position,
+      private[this] val ev: EvalScope)
+      extends Val.Obj.Member(
+        false,
+        Visibility.Normal,
+        cached = true,
+        deprecatedSkipAsserts = true
+      ) {
+    def invoke(self: Val.Obj, sup: Val.Obj, fs: FileScope, callerEv: EvalScope): Val =
+      source.value(key, pos)(ev)
   }
 
   val functions: Seq[(String, Val.Func)] = Seq(
@@ -303,23 +347,7 @@ object ObjectModule extends AbstractFunctionModule {
      */
     builtin("objectKeysValues", "o") { (pos, ev, o: Val.Obj) =>
       val keys = getVisibleKeys(ev, o)
-      val noOffsetPos = pos.fileScope.noOffsetPos
-      val result = new Array[Eval](keys.length)
-      var i = 0
-      while (i < keys.length) {
-        val k = keys(i)
-        result(i) = Val.Obj.mk(
-          noOffsetPos,
-          "key" -> new Val.Obj.ConstMember(false, Visibility.Normal, Val.Str(noOffsetPos, k)),
-          "value" -> new Val.Obj.ConstMember(
-            false,
-            Visibility.Normal,
-            o.value(k, noOffsetPos)(ev)
-          )
-        )
-        i += 1
-      }
-      Val.Arr(pos, result)
+      (new ObjectKeysValuesArr(pos, o, keys, ev): Val.Arr)
     },
     /**
      * [[https://jsonnet.org/ref/stdlib.html#std-objectKeysValuesAll std.objectKeysValuesAll(o)]].
@@ -330,23 +358,7 @@ object ObjectModule extends AbstractFunctionModule {
      */
     builtin("objectKeysValuesAll", "o") { (pos, ev, o: Val.Obj) =>
       val keys = getAllKeys(ev, o)
-      val noOffsetPos = pos.fileScope.noOffsetPos
-      val result = new Array[Eval](keys.length)
-      var i = 0
-      while (i < keys.length) {
-        val k = keys(i)
-        result(i) = Val.Obj.mk(
-          noOffsetPos,
-          "key" -> new Val.Obj.ConstMember(false, Visibility.Normal, Val.Str(noOffsetPos, k)),
-          "value" -> new Val.Obj.ConstMember(
-            false,
-            Visibility.Normal,
-            o.value(k, noOffsetPos)(ev)
-          )
-        )
-        i += 1
-      }
-      Val.Arr(pos, result)
+      (new ObjectKeysValuesArr(pos, o, keys, ev): Val.Arr)
     },
     /**
      * [[https://jsonnet.org/ref/stdlib.html#std-objectRemoveKey std.objectRemoveKey(obj, key)]].

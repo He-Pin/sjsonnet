@@ -13,6 +13,8 @@ object EvaluatorTests extends TestSuite {
     }
     test("objects") {
       eval("{x: 1}.x") ==> ujson.Num(1)
+      eval("std.objectKeysValues({a: error 'unused'})[0].key") ==> ujson.Str("a")
+      assert(evalErr("std.objectKeysValues({a: error 'boom'})[0].value").contains("boom"))
     }
     test("arrays") {
       eval("[1, [2, 3], 4][1][0]") ==> ujson.Num(2)

@@ -27,6 +27,9 @@ object SetModule extends AbstractFunctionModule {
 
   @inline private def isDefaultKeyF(v: Val): Boolean = v.asInstanceOf[AnyRef] eq DefaultKeyF
 
+  @inline private def isIdentityKeyF(v: Val): Boolean =
+    v == null || isDefaultKeyF(v) || (v.isInstanceOf[Val.Func] && v.asFunc.isIdentityFunction)
+
   /**
    * [[https://jsonnet.org/ref/stdlib.html#std-set std.set(arr, keyF=id)]].
    *
@@ -41,7 +44,7 @@ object SetModule extends AbstractFunctionModule {
   }
 
   private def applyKeyFunc(elem: Val, keyF: Val, pos: Position, ev: EvalScope): Val = {
-    if (isDefaultKeyF(keyF)) elem
+    if (isIdentityKeyF(keyF)) elem
     else keyF.asFunc.apply1(elem, pos.noOffset)(ev, TailstrictModeDisabled).value
   }
 
@@ -111,7 +114,7 @@ object SetModule extends AbstractFunctionModule {
     while (i < arrValue.length) {
       val v = arrValue(i)
       val vKey =
-        if (isDefaultKeyF(keyF)) v.value
+        if (isIdentityKeyF(keyF)) v.value
         else keyF.asFunc.apply1(v, pos.noOffset)(ev, TailstrictModeDisabled)
       if (lastAddedKey == null || !ev.equal(vKey, lastAddedKey)) {
         out.+=(v)
@@ -126,11 +129,19 @@ object SetModule extends AbstractFunctionModule {
   private def sortArr(pos: Position, ev: EvalScope, arr: Val, keyF: Val): Val = {
     // Fast path: range arrays are already sorted ascending by construction.
     // Avoids O(n) materialization + O(n log n) sort for already-sorted data.
-    if (keyF == null || keyF.isInstanceOf[Val.False]) {
+    if (isIdentityKeyF(keyF) || keyF.isInstanceOf[Val.False]) {
       arr match {
         case a: Val.Arr =>
           val sorted = a.asSortedIfKnown(pos)
           if (sorted != null) return sorted
+        case _ =>
+      }
+    }
+    if (keyF != null && keyF.isInstanceOf[Val.Func] && keyF.asFunc.isUnaryMinusParamFunction) {
+      arr match {
+        case a: Val.Arr =>
+          val sorted = a.asSortedIfKnown(pos)
+          if (sorted != null) return sorted.reversed(pos)
         case _ =>
       }
     }
@@ -143,7 +154,7 @@ object SetModule extends AbstractFunctionModule {
       arr
     } else {
       val keyFFunc =
-        if (keyF == null || isDefaultKeyF(keyF)) null else keyF.asFunc
+        if (isIdentityKeyF(keyF)) null else keyF.asFunc
       Val.Arr(
         pos,
         if (keyFFunc != null) {
