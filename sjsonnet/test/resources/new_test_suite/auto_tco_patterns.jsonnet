@@ -89,11 +89,11 @@ local f_four(a, b, c, d) =
 // This tests that hasNonRecursiveExit correctly identifies the outer if's base case
 // (not the &&/|| rhs which always recurses).
 local f_and_with_outer_base(n) =
-  if n <= 0 then 0  // outer base case
+  if n <= 0 then true  // outer base case
   else (true && f_and_with_outer_base(n - 1));  // rhs always recurses, but outer if provides exit
 
 local f_or_with_outer_base(n) =
-  if n <= 0 then 0
+  if n <= 0 then true
   else (false || f_or_with_outer_base(n - 1));
 
 // Run tests
@@ -117,7 +117,7 @@ std.assertEqual(f_deep_if(10000), 2) &&
 std.assertEqual(f_zero(), 42) &&
 std.assertEqual(f_four(10000, 0, 0, 0), 10000) &&
 // Edge case: &&/|| with outer base case — auto-TCO should work because outer if provides exit
-std.assertEqual(f_and_with_outer_base(10000), 0) &&
-std.assertEqual(f_or_with_outer_base(10000), 0) &&
+std.assertEqual(f_and_with_outer_base(10000), true) &&
+std.assertEqual(f_or_with_outer_base(10000), true) &&
 
 true

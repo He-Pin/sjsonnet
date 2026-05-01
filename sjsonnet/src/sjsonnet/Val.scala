@@ -2033,15 +2033,33 @@ final class TailCall(
     val args: Array[Eval],
     val namedNames: Array[String],
     val callSiteExpr: Expr,
-    val strict: Boolean = false)
+    val strict: Boolean = false,
+    private var booleanCheck: TailCall.BooleanCheck = null)
     extends Val {
   private[sjsonnet] def valTag: Byte = -1
   var pos: Position = callSiteExpr.pos
   def prettyName = "tailcall"
   override def exprErrorString: String = callSiteExpr.exprErrorString
+
+  def withBooleanCheck(check: TailCall.BooleanCheck): TailCall = {
+    if (booleanCheck eq null) booleanCheck = check
+    this
+  }
+
+  private[sjsonnet] def pendingBooleanCheck: TailCall.BooleanCheck = booleanCheck
 }
 
 object TailCall {
+  // Delayed result validation for tail-position &&/||. It deliberately lives on the TailCall rather
+  // than resolving nested TailCalls inside Evaluator.visitAndRhsTailPos/visitOrRhsTailPos, because
+  // nested resolution would undermine stack-safety and could force work at a different lazy boundary.
+  final class BooleanCheck(val op: String, val pos: Position) {
+    def check(result: Val)(implicit ev: EvalErrorScope): Val = result match {
+      case b: Val.Bool => b
+      case unknown     =>
+        Error.fail(s"binary operator $op does not operate on ${unknown.prettyName}s.", pos)
+    }
+  }
 
   /**
    * Iteratively resolve a [[TailCall]] chain (trampoline loop). If `current` is not a TailCall, it
@@ -2057,21 +2075,27 @@ object TailCall {
    * Error frames preserve the original call-site expression name (e.g. "Apply2") so that TCO does
    * not alter user-visible stack traces.
    */
+  def resolve(current: Val)(implicit ev: EvalScope): Val = resolve(current, null)
+
   @tailrec
-  def resolve(current: Val)(implicit ev: EvalScope): Val = current match {
-    case tc: TailCall =>
-      val mode: TailstrictMode =
-        if (tc.strict) TailstrictModeEnabled else TailstrictModeAutoTCO
-      val next =
-        try {
-          tc.func.apply(tc.args, tc.namedNames, tc.callSiteExpr.pos)(ev, mode)
-        } catch {
-          case e: Error =>
-            throw e.addFrame(tc.callSiteExpr.pos, tc.callSiteExpr)
-        }
-      resolve(next)
-    case result => result
-  }
+  private def resolve(current: Val, booleanCheck: BooleanCheck)(implicit ev: EvalScope): Val =
+    current match {
+      case tc: TailCall =>
+        val mode: TailstrictMode =
+          if (tc.strict) TailstrictModeEnabled else TailstrictModeAutoTCO
+        val nextCheck =
+          if (tc.pendingBooleanCheck != null) tc.pendingBooleanCheck else booleanCheck
+        val next =
+          try {
+            tc.func.apply(tc.args, tc.namedNames, tc.callSiteExpr.pos)(ev, mode)
+          } catch {
+            case e: Error =>
+              throw e.addFrame(tc.callSiteExpr.pos, tc.callSiteExpr)
+          }
+        resolve(next, nextCheck)
+      case result =>
+        if (booleanCheck == null) result else booleanCheck.check(result)
+    }
 }
 
 /**

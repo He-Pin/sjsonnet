@@ -658,7 +658,7 @@ class StaticOptimizer(
         // when lhs is true). We must still check rhs for non-recursive exits.
         hasNonRecursiveExit(e.rhs, selfName, selfIdx, paramCount)
       case _: Expr.Error =>
-        // error value is the last thing evaluated before throwing → non-recursive exit
+        // error value is the last thing evaluated before throwing -> non-recursive exit
         true
       case e if isSelfTailCall(e) =>
         false // this path IS a self-recursive tail call → not a non-recursive exit

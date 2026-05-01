@@ -1502,14 +1502,19 @@ class Evaluator(
       }
     }
 
-  // And/Or rhs tail-position helpers — extracted to preserve @tailrec on visitExprWithTailCallSupport.
-  // TailCall sentinels pass through without a boolean type check: this is a deliberate semantic
-  // relaxation matching google/jsonnet behavior (where `&&` is simply `if a then b else false`).
-  // Direct non-boolean rhs values (e.g. `true && "hello"`) are still caught.
+  // And/Or rhs tail-position helpers - extracted to preserve @tailrec on
+  // visitExprWithTailCallSupport. TailCall sentinels keep the boolean type check as delayed
+  // continuation state so the trampoline can remain stack-safe while preserving normal &&/||
+  // result validation.
+  //
+  // Do not resolve the TailCall here and then call .asBoolean. That would re-enter the trampoline
+  // from inside the current function body, restoring recursive stack growth for deep &&/|| chains
+  // and moving the lazy evaluation boundary. Instead, attach the check and let the outer
+  // TailCall.resolve loop apply it once the final value is produced.
   private def visitAndRhsTailPos(rhs: Expr, andPos: Position)(implicit scope: ValScope): Val = {
     visitExprWithTailCallSupport(rhs) match {
       case b: Val.Bool  => b
-      case tc: TailCall => tc
+      case tc: TailCall => tc.withBooleanCheck(new TailCall.BooleanCheck("&&", andPos))
       case unknown      =>
         Error.fail(s"binary operator && does not operate on ${unknown.prettyName}s.", andPos)
     }
@@ -1518,7 +1523,7 @@ class Evaluator(
   private def visitOrRhsTailPos(rhs: Expr, orPos: Position)(implicit scope: ValScope): Val = {
     visitExprWithTailCallSupport(rhs) match {
       case b: Val.Bool  => b
-      case tc: TailCall => tc
+      case tc: TailCall => tc.withBooleanCheck(new TailCall.BooleanCheck("||", orPos))
       case unknown      =>
         Error.fail(s"binary operator || does not operate on ${unknown.prettyName}s.", orPos)
     }
@@ -1530,8 +1535,8 @@ class Evaluator(
    * `TailCall.resolve` in `visitApply*` to iterate rather than grow the JVM stack.
    *
    * Potential tail positions are propagated through: IfElse (both branches), LocalExpr (returned),
-   * AssertExpr (returned), And (rhs), Or (rhs), and Expr.Error (value). All other expression types
-   * delegate to normal `visitExpr`.
+   * AssertExpr (returned), And (rhs), and Or (rhs). All other expression types delegate to normal
+   * `visitExpr`.
    */
   @tailrec
   private def visitExprWithTailCallSupport(e: Expr)(implicit scope: ValScope): Val = e match {
