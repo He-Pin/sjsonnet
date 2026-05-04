@@ -7,6 +7,22 @@ import java.util.regex.Pattern
 import scala.collection.mutable
 
 object Platform {
+  private def repeatCapacity(s: String, count: Int): Int =
+    if (count > 0 && s.length <= Int.MaxValue / count) s.length * count else 0
+
+  def repeatString(s: String, count: Int): String = {
+    if (count <= 0 || s.isEmpty) ""
+    else {
+      val builder = new StringBuilder(repeatCapacity(s, count))
+      var i = 0
+      while (i < count) {
+        builder.append(s)
+        i += 1
+      }
+      builder.toString()
+    }
+  }
+
   private def nodeToJson(node: Node): ujson.Value = node match {
     case _: Node.ScalarNode =>
       YamlDecoder.forAny.construct(node).getOrElse("") match {

@@ -1,0 +1,10 @@
+{
+   "resolveLen": 15871,
+   "resolveTail": "a/b/c/libsonnet/main.libsonnet",
+   "splitJoinLen": 5010,
+   "splitLen": 512,
+   "splitLimitLastLen": 4606,
+   "splitLimitLen": 129,
+   "splitLimitRFirstLen": 4496,
+   "splitLimitRLen": 129
+}

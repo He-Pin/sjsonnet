@@ -1,8 +1,10 @@
 package sjsonnet
 
 import java.io.{BufferedInputStream, ByteArrayOutputStream, File, FileInputStream}
+import java.nio.charset.StandardCharsets.UTF_8
 import java.util
 import java.util.Base64
+import java.util.HexFormat
 import java.util.zip.GZIPOutputStream
 import com.google.re2j.Pattern
 import net.jpountz.xxhash.{StreamingXXHash64, XXHashFactory}
@@ -16,6 +18,11 @@ import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
 object Platform {
+  private val hexFormat = HexFormat.of()
+
+  def repeatString(s: String, count: Int): String =
+    if (count <= 0) "" else s.repeat(count)
+
   def gzipBytes(b: Array[Byte]): String = {
     val outputStream: ByteArrayOutputStream = new ByteArrayOutputStream(b.length)
     val gzip: GZIPOutputStream = new GZIPOutputStream(outputStream)
@@ -29,7 +36,7 @@ object Platform {
   }
 
   def gzipString(s: String): String = {
-    gzipBytes(s.getBytes())
+    gzipBytes(s.getBytes(UTF_8))
   }
 
   /**
@@ -50,7 +57,7 @@ object Platform {
   }
 
   def xzString(s: String, compressionLevel: Option[Int]): String = {
-    xzBytes(s.getBytes(), compressionLevel)
+    xzBytes(s.getBytes(UTF_8), compressionLevel)
   }
 
   private def nodeToJson(node: Any): ujson.Value = node match {
@@ -105,13 +112,10 @@ object Platform {
     }
   }
 
-  private def computeHash(algorithm: String, s: String) = {
-    java.security.MessageDigest
-      .getInstance(algorithm)
-      .digest(s.getBytes("UTF-8"))
-      .map { b => String.format("%02x", (b & 0xff).asInstanceOf[Integer]) }
-      .mkString
-  }
+  private def computeHash(algorithm: String, s: String): String =
+    hexFormat.formatHex(
+      java.security.MessageDigest.getInstance(algorithm).digest(s.getBytes(UTF_8))
+    )
 
   def md5(s: String): String = computeHash("MD5", s)
 

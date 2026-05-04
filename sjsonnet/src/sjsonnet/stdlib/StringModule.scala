@@ -465,21 +465,16 @@ object StringModule extends AbstractFunctionModule {
     val b = new mutable.ArrayBuilder.ofRef[Eval]
     if (maxSplits >= 0 && maxSplits < Int.MaxValue) b.sizeHint(maxSplits + 1)
     var sz = 0
-    var i = 0
     var start = 0
+    var next = if (maxSplits == 0) -1 else str.indexOf(cStr, start)
 
-    while (i <= str.length - cStr.length && (maxSplits < 0 || sz < maxSplits)) {
-      if (str.startsWith(cStr, i)) {
-        val finalStr = Val.Str(pos, str.substring(start, i))
-        b.+=(finalStr)
-        start = i + cStr.length
-        sz += 1
-        i += cStr.length
-      } else {
-        i += 1
-      }
+    while (next >= 0 && (maxSplits < 0 || sz < maxSplits)) {
+      b += Val.Str(pos, str.substring(start, next))
+      start = next + cStr.length
+      sz += 1
+      next = if (maxSplits >= 0 && sz >= maxSplits) -1 else str.indexOf(cStr, start)
     }
-    b.+=(Val.Str(pos, str.substring(start)))
+    b += Val.Str(pos, str.substring(start))
     sz += 1
     b.result()
   }
@@ -787,21 +782,9 @@ object StringModule extends AbstractFunctionModule {
     builtin(SplitLimit),
     builtin(SplitLimitR),
     builtin("resolvePath", "f", "r") { (_, _, f: String, r: String) =>
-      val parts = f.split("/", -1)
-      val prefixCount = parts.length - 1
-      if (prefixCount <= 0) r
-      else {
-        val out = new java.lang.StringBuilder(f.length + r.length)
-        var i = 0
-        while (i < prefixCount) {
-          if (i > 0) out.append('/')
-          out.append(parts(i))
-          i += 1
-        }
-        out.append('/')
-        out.append(r)
-        out.toString
-      }
+      val slash = f.lastIndexOf('/')
+      if (slash < 0) r
+      else f.substring(0, slash + 1) + r
     },
     builtin(StringChars),
     builtin(ParseInt),

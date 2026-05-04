@@ -254,14 +254,14 @@ object Format {
       if (lhs2.isEmpty && mhs.isEmpty) rhs
       else if (lhs2.isEmpty) mhs + rhs
       else lhs2 + mhs + rhs
-    } else if (formatted.zeroPadded) {
-      if (numeric) lhs2 + mhs + "0" * missingWidth + rhs
-      else {
-        if (formatted.leftAdjusted) lhs2 + mhs + rhs + " " * missingWidth
-        else " " * missingWidth + lhs2 + mhs + rhs
-      }
-    } else if (formatted.leftAdjusted) lhs2 + mhs + rhs + " " * missingWidth
-    else " " * missingWidth + lhs2 + mhs + rhs
+    } else {
+      val padding =
+        if (formatted.zeroPadded && numeric) Platform.repeatString("0", missingWidth)
+        else Platform.repeatString(" ", missingWidth)
+      if (formatted.zeroPadded && numeric) lhs2 + mhs + padding + rhs
+      else if (formatted.leftAdjusted) lhs2 + mhs + rhs + padding
+      else padding + lhs2 + mhs + rhs
+    }
   }
 
   def format(s: String, values0: Val, pos: Position)(implicit evaluator: EvalScope): String = {
@@ -929,7 +929,7 @@ object Format {
     if (precision == FormatSpec.NoNumber) rhs
     else {
       val shortage = precision - rhs.length
-      if (shortage > 0) "0" * shortage + rhs else rhs
+      if (shortage > 0) Platform.repeatString("0", shortage) + rhs else rhs
     }
   }
 

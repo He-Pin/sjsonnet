@@ -353,10 +353,10 @@ object SjsonnetMainBase {
       codeFiles: Seq[String],
       wd: os.Path): Map[String, String] = {
 
-    def split(s: String) = s.split("=", 2) match {
-      case Array(x)    => (x, System.getenv(x))
-      case Array(x, v) => (x, v)
-      case _           => throw new IllegalArgumentException("invalid binding: " + s)
+    def split(s: String) = {
+      val idx = s.indexOf('=')
+      if (idx < 0) (s, System.getenv(s))
+      else (s.substring(0, idx), s.substring(idx + 1))
     }
 
     def splitMap(s: Seq[String], f: String => String) =
