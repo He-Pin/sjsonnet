@@ -232,8 +232,18 @@ abstract class Materializer {
       depth: Int,
       ctx: Materializer.MaterializeContext)(implicit evaluator: EvalScope): T = {
     storePos(xs.pos)
-    // Fast path for byte-backed arrays: skip per-element value() + type dispatch
+    // Fast paths for compact numeric arrays: skip per-element value() + type dispatch.
     xs match {
+      case range: Val.RangeArr if range.isCompactRange =>
+        val len = range.length
+        val av = visitor.visitArray(len, -1)
+        val sub = av.subVisitor.asInstanceOf[Visitor[T, T]]
+        var i = 0
+        while (i < len) {
+          av.visitValue(sub.visitFloat64(range.doubleAt(i), -1), -1)
+          i += 1
+        }
+        return av.visitEnd(-1)
       case ba: Val.ByteArr =>
         val bytes = ba.rawBytes
         val len = bytes.length
@@ -376,9 +386,18 @@ abstract class Materializer {
         case frame: Materializer.MaterializeArrFrame[T @unchecked] =>
           val arr = frame.arr
           val av = frame.arrVisitor
-          // Fast path for byte-backed arrays: emit all elements directly
+          // Fast paths for compact numeric arrays: emit all elements directly.
           if (frame.index == 0) {
             arr match {
+              case range: Val.RangeArr if range.isCompactRange =>
+                val len = range.length
+                var i = 0
+                val sub = av.subVisitor.asInstanceOf[Visitor[T, T]]
+                while (i < len) {
+                  av.visitValue(sub.visitFloat64(range.doubleAt(i), -1), -1)
+                  i += 1
+                }
+                frame.index = len // mark as done
               case ba: Val.ByteArr =>
                 val bytes = ba.rawBytes
                 val len = bytes.length

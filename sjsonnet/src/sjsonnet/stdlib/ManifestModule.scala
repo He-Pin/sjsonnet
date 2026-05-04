@@ -154,8 +154,18 @@ object ManifestModule extends AbstractFunctionModule {
    */
   private object ManifestTomlEx extends Val.Builtin2("manifestTomlEx", "value", "indent") {
     private def isTableArray(v: Val) = v.value match {
-      case s: Val.Arr => s.length > 0 && s.asLazyArray.forall(_.isInstanceOf[Val.Obj])
-      case _          => false
+      case s: Val.Arr =>
+        if (s.length == 0) false
+        else {
+          var i = 0
+          var allObjects = true
+          while (i < s.length && allObjects) {
+            allObjects = s.value(i).isInstanceOf[Val.Obj]
+            i += 1
+          }
+          allObjects
+        }
+      case _ => false
     }
 
     private def isSection(v: Val) = v.value.isInstanceOf[Val.Obj] || isTableArray(v.value)
@@ -288,9 +298,8 @@ object ManifestModule extends AbstractFunctionModule {
       while (!q.isEmpty) {
         q.removeFirst().value match {
           case v: Val.Arr =>
-            val inner = v.asLazyArray
-            var i = inner.length - 1
-            while (i >= 0) { q.push(inner(i)); i -= 1 }
+            var i = v.length - 1
+            while (i >= 0) { q.push(v.eval(i)); i -= 1 }
           case s: Val.Str => out.write(s.str)
           case s          => Error.fail("Cannot call deepJoin on " + s.prettyName)
         }
@@ -387,16 +396,15 @@ object ManifestModule extends AbstractFunctionModule {
       }
       v match {
         case arr: Val.Arr =>
-          val items = arr.asLazyArray
           val sb = new java.lang.StringBuilder()
           var i = 0
-          while (i < items.length) {
+          while (i < arr.length) {
             if (i > 0) sb.append("\n---\n")
             else sb.append("---\n")
             sb.append(
               Materializer
                 .apply0(
-                  items(i).value,
+                  arr.value(i),
                   new YamlRenderer(indentArrayInObject = indentArrayInObject, quoteKeys = quoteKeys)
                 )(ev)
                 .toString

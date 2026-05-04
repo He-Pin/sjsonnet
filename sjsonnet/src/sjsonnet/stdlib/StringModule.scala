@@ -417,6 +417,18 @@ object StringModule extends AbstractFunctionModule {
    * case the arrays are concatenated in the same way, to produce a single array.
    */
   private object Join extends Val.Builtin2("join", "sep", "arr") {
+    private def appendArray(out: mutable.ArrayBuilder.ofRef[Eval], arr: Val.Arr): Unit = {
+      val direct = arr.directBackingArray
+      if (direct != null) out ++= direct
+      else {
+        var i = 0
+        while (i < arr.length) {
+          out += arr.eval(i)
+          i += 1
+        }
+      }
+    }
+
     def evalRhs(sep: Eval, _arr: Eval, ev: EvalScope, pos: Position): Val = {
       val arr = implicitly[ReadWriter[Val.Arr]].apply(_arr.value)
       sep.value match {
@@ -445,9 +457,9 @@ object StringModule extends AbstractFunctionModule {
             x match {
               case Val.Null(_) => // do nothing
               case v: Val.Arr  =>
-                if (added) out ++= sep.asLazyArray
+                if (added) appendArray(out, sep)
                 added = true
-                out ++= v.asLazyArray
+                appendArray(out, v)
               case x => Error.fail("Cannot join " + x.prettyName)
             }
           }

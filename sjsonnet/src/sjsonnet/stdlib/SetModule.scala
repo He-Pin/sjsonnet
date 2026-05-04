@@ -223,11 +223,10 @@ object SetModule extends AbstractFunctionModule {
           sorted match {
             case Val.Str(_, sortedStr) => str == sortedStr
             case sortedArr: Val.Arr    =>
-              val chars = sortedArr.asLazyArray
               val sb = new java.lang.StringBuilder(str.length)
               var i = 0
-              while (i < chars.length) {
-                sb.append(chars(i).value.asString)
+              while (i < sortedArr.length) {
+                sb.append(sortedArr.value(i).asString)
                 i += 1
               }
               str == sb.toString

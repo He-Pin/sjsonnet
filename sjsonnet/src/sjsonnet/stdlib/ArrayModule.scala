@@ -50,6 +50,23 @@ object ArrayModule extends AbstractFunctionModule {
     if (isDefaultKeyF(keyF)) elem
     else keyF.asFunc.apply1(elem, pos.noOffset)(ev, TailstrictModeDisabled)
 
+  private def rangeSum(arr: Val.RangeArr): Double = {
+    val len = arr.length
+    if (len == 0) 0.0
+    else (arr.value(0).asDouble + arr.value(len - 1).asDouble) * len / 2.0
+  }
+
+  private def byteArraySum(arr: Val.ByteArr): Double = {
+    val bytes = arr.rawBytes
+    var sum = 0.0
+    var i = 0
+    while (i < bytes.length) {
+      sum += (bytes(i) & 0xff)
+      i += 1
+    }
+    sum
+  }
+
   /**
    * [[https://jsonnet.org/ref/stdlib.html#std-minArray std.minArray(arr, keyF, onEmpty)]].
    *
@@ -78,20 +95,20 @@ object ArrayModule extends AbstractFunctionModule {
           onEmpty
         }
       } else {
-        val strict = arr.asStrictArray
-        var bestIdx = 0
-        var bestKey = applyArrayKey(keyF, strict(0), pos, ev)
+        var bestElem = arr.value(0)
+        var bestKey = applyArrayKey(keyF, bestElem, pos, ev)
         Util.compareJsonnetStd(bestKey, bestKey, ev)
         var i = 1
-        while (i < strict.length) {
-          val v = applyArrayKey(keyF, strict(i), pos, ev)
+        while (i < arr.length) {
+          val elem = arr.value(i)
+          val v = applyArrayKey(keyF, elem, pos, ev)
           if (Util.compareJsonnetStd(v, bestKey, ev) < 0) {
             bestKey = v
-            bestIdx = i
+            bestElem = elem
           }
           i += 1
         }
-        strict(bestIdx)
+        bestElem
       }
     }
   }
@@ -124,20 +141,20 @@ object ArrayModule extends AbstractFunctionModule {
           onEmpty
         }
       } else {
-        val strict = arr.asStrictArray
-        var bestIdx = 0
-        var bestKey = applyArrayKey(keyF, strict(0), pos, ev)
+        var bestElem = arr.value(0)
+        var bestKey = applyArrayKey(keyF, bestElem, pos, ev)
         Util.compareJsonnetStd(bestKey, bestKey, ev)
         var i = 1
-        while (i < strict.length) {
-          val v = applyArrayKey(keyF, strict(i), pos, ev)
+        while (i < arr.length) {
+          val elem = arr.value(i)
+          val v = applyArrayKey(keyF, elem, pos, ev)
           if (Util.compareJsonnetStd(v, bestKey, ev) > 0) {
             bestKey = v
-            bestIdx = i
+            bestElem = elem
           }
           i += 1
         }
-        strict(bestIdx)
+        bestElem
       }
     }
   }
@@ -209,18 +226,25 @@ object ArrayModule extends AbstractFunctionModule {
   private object Filter extends Val.Builtin2("filter", "func", "arr") {
     def evalRhs(_func: Eval, arr: Eval, ev: EvalScope, pos: Position): Val = {
       val p = pos.noOffset
-      val a = arr.value.asArr.asLazyArray
+      val source = arr.value.asArr
+      val len = source.length
       var i = 0
       val func = _func.value.asFunc
       if (func.isInstanceOf[Val.Builtin] || func.params.names.length != 1) {
-        while (i < a.length) {
-          if (!func.apply1(a(i), p)(ev, TailstrictModeDisabled).asBoolean) {
-            var b = new Array[Eval](a.length - 1)
-            System.arraycopy(a, 0, b, 0, i)
+        while (i < len) {
+          val elem = source.eval(i)
+          if (!func.apply1(elem, p)(ev, TailstrictModeDisabled).asBoolean) {
+            var b = new Array[Eval](len - 1)
+            var k = 0
+            while (k < i) {
+              b(k) = source.eval(k)
+              k += 1
+            }
             var j = i + 1
-            while (j < a.length) {
-              if (func.apply1(a(j), p)(ev, TailstrictModeDisabled).asBoolean) {
-                b(i) = a(j)
+            while (j < len) {
+              val elem = source.eval(j)
+              if (func.apply1(elem, p)(ev, TailstrictModeDisabled).asBoolean) {
+                b(i) = elem
                 i += 1
               }
               j += 1
@@ -239,16 +263,22 @@ object ArrayModule extends AbstractFunctionModule {
         }
         val newScope: ValScope = func.defSiteValScope.extendBy(1)
         val scopeIdx = newScope.length - 1
-        while (i < a.length) {
-          newScope.bindings(scopeIdx) = a(i)
+        while (i < len) {
+          val elem = source.eval(i)
+          newScope.bindings(scopeIdx) = elem
           if (!func.evalRhsResolved(newScope, ev, funDefFileScope, p).asBoolean) {
-            var b = new Array[Eval](a.length - 1)
-            System.arraycopy(a, 0, b, 0, i)
+            var b = new Array[Eval](len - 1)
+            var k = 0
+            while (k < i) {
+              b(k) = source.eval(k)
+              k += 1
+            }
             var j = i + 1
-            while (j < a.length) {
-              newScope.bindings(scopeIdx) = a(j)
+            while (j < len) {
+              val elem = source.eval(j)
+              newScope.bindings(scopeIdx) = elem
               if (func.evalRhsResolved(newScope, ev, funDefFileScope, p).asBoolean) {
-                b(i) = a(j)
+                b(i) = elem
                 i += 1
               }
               j += 1
@@ -259,7 +289,7 @@ object ArrayModule extends AbstractFunctionModule {
           i += 1
         }
       }
-      Val.Arr(pos, a)
+      source
     }
   }
 
@@ -276,27 +306,13 @@ object ArrayModule extends AbstractFunctionModule {
       val arg = arr.value
       arg match {
         case Val.Str(_, str) => evalStr(func, str, ev, pos.noOffset)
-        case _               => evalArr(func, arg.asArr, ev, pos)
+        case a: Val.Arr      => Val.Arr.mapped(pos, a, func, pos.noOffset, ev)
+        case _               => Val.Arr.mapped(pos, arg.asArr, func, pos.noOffset, ev)
       }
-    }
-
-    private def evalArr(_func: Val.Func, arg: Val.Arr, ev: EvalScope, pos: Position): Val.Arr = {
-      // Keep map as per-element LazyApply1 thunks. On the JVM this is faster for the common
-      // "map then fully consume" path than an indexed view with a shared state side table, while
-      // still preserving lazy element evaluation.
-      val noOff = pos.noOffset
-      val len = arg.length
-      val result = new Array[Eval](len)
-      var i = 0
-      while (i < len) {
-        result(i) = new LazyApply1(_func, arg.eval(i), noOff, ev)
-        i += 1
-      }
-      Val.Arr(pos, result)
     }
 
     private def evalStr(_func: Val.Func, arg: String, ev: EvalScope, pos: Position): Val.Arr = {
-      evalArr(_func, stringChars(pos, arg), ev, pos)
+      Val.Arr.mapped(pos, stringChars(pos, arg), _func, pos.noOffset, ev)
     }
   }
 
@@ -313,19 +329,10 @@ object ArrayModule extends AbstractFunctionModule {
     def evalRhs(_func: Eval, _arr: Eval, ev: EvalScope, pos: Position): Val = {
       val func = _func.value.asFunc
       val arr = _arr.value match {
-        case Val.Str(_, str) => stringChars(pos, str).asLazyArray
-        case v               => v.asArr.asLazyArray
+        case Val.Str(_, str) => stringChars(pos, str)
+        case v               => v.asArr
       }
-      val a = new Array[Eval](arr.length)
-      val noOff = pos.noOffset
-      var i = 0
-      while (i < a.length) {
-        val x = arr(i)
-        val idx = Val.cachedNum(pos, i)
-        a(i) = new LazyApply2(func, idx, x, noOff, ev)
-        i += 1
-      }
-      Val.Arr(pos, a)
+      Val.Arr.mappedWithIndex(pos, arr, func, pos, pos.noOffset, ev)
     }
   }
 
@@ -367,8 +374,13 @@ object ArrayModule extends AbstractFunctionModule {
       out.sizeHint(arr.length * 4) // Rough size hint
       for (x <- arr) {
         x.value match {
-          case v: Val.Arr => out ++= v.asLazyArray
-          case x          =>
+          case v: Val.Arr =>
+            var i = 0
+            while (i < v.length) {
+              out += v.eval(i)
+              i += 1
+            }
+          case x =>
             Error.fail("binary operator + requires matching types, got array and " + x.prettyName)
         }
       }
@@ -389,17 +401,20 @@ object ArrayModule extends AbstractFunctionModule {
       if (!value0.isInstanceOf[Val.Arr]) {
         return Val.Arr(pos, Array[Eval](value0))
       }
-      val lazyArray = value0.asInstanceOf[Val.Arr].asLazyArray
+      val arr = value0.asInstanceOf[Val.Arr]
       val out = new mutable.ArrayBuilder.ofRef[Eval]
-      out.sizeHint(lazyArray.length)
-      val q = new java.util.ArrayDeque[Eval](lazyArray.length)
-      lazyArray.foreach(q.add)
+      out.sizeHint(arr.length)
+      val q = new java.util.ArrayDeque[Eval](arr.length)
+      var initialIdx = 0
+      while (initialIdx < arr.length) {
+        q.add(arr.eval(initialIdx))
+        initialIdx += 1
+      }
       while (!q.isEmpty) {
         q.removeFirst().value match {
           case v: Val.Arr =>
-            val inner = v.asLazyArray
-            var i = inner.length - 1
-            while (i >= 0) { q.push(inner(i)); i -= 1 }
+            var i = v.length - 1
+            while (i >= 0) { q.push(v.eval(i)); i -= 1 }
           case x => out += x
         }
       }
@@ -416,8 +431,9 @@ object ArrayModule extends AbstractFunctionModule {
    */
   private object Reverse extends Val.Builtin1("reverse", "arrs") {
     def evalRhs(arrs: Eval, ev: EvalScope, pos: Position): Val = {
-      // Zero-copy reverse: create a reversed view sharing the same backing array.
-      // This avoids allocating and copying a new array, reducing GC pressure.
+      // Most arrays reverse as a zero-copy view that shares the same backing array. Array-level
+      // lazy views may first materialize thunks so the original and reversed arrays preserve
+      // shared callback evaluation semantics.
       arrs.value.asArr.reversed(pos)
     }
   }
@@ -442,11 +458,10 @@ object ArrayModule extends AbstractFunctionModule {
             }
             str.str.contains(secondArg)
           case a: Val.Arr =>
-            val la = a.asLazyArray
             var i = 0
             var found = false
-            while (i < la.length && !found) {
-              if (ev.equal(la(i).value, x.value)) found = true
+            while (i < a.length && !found) {
+              if (ev.equal(a.value(i), x.value)) found = true
               i += 1
             }
             found
@@ -530,12 +545,14 @@ object ArrayModule extends AbstractFunctionModule {
     (e.lhs, e.rhs) match {
       // Pattern: acc + elem
       case (l: Expr.ValidId, r: Expr.ValidId) if l.nameIdx == base && r.nameIdx == base + 1 =>
-        val lazyArr = arr.asLazyArray
-        val sb = new java.lang.StringBuilder(initStr.length + lazyArr.length * 8)
+        val direct = arr.directBackingArray
+        val len = if (direct == null) arr.length else direct.length
+        val sb = new java.lang.StringBuilder(initStr.length + len * 8)
         sb.append(initStr)
         var i = 0
-        while (i < lazyArr.length) {
-          lazyArr(i).value match {
+        while (i < len) {
+          val elem = if (direct == null) arr.value(i) else direct(i).value
+          elem match {
             case s: Val.Str => sb.append(s.str)
             case v          => sb.append(Materializer.stringify(v)(ev))
           }
@@ -549,15 +566,17 @@ object ArrayModule extends AbstractFunctionModule {
         (inner.lhs, inner.rhs) match {
           case (l: Expr.ValidId, sep: Val.Str) if l.nameIdx == base =>
             val sepStr = sep.str
-            val lazyArr = arr.asLazyArray
+            val direct = arr.directBackingArray
+            val len = if (direct == null) arr.length else direct.length
             val sb =
-              new java.lang.StringBuilder(initStr.length + lazyArr.length * (sepStr.length + 8))
+              new java.lang.StringBuilder(initStr.length + len * (sepStr.length + 8))
             sb.append(initStr)
             var i = 0
-            while (i < lazyArr.length) {
+            while (i < len) {
               if (skipSepForFirst == null || i > 0 || initStr != skipSepForFirst)
                 sb.append(sepStr)
-              lazyArr(i).value match {
+              val elem = if (direct == null) arr.value(i) else direct(i).value
+              elem match {
                 case s: Val.Str => sb.append(s.str)
                 case v          => sb.append(Materializer.stringify(v)(ev))
               }
@@ -640,12 +659,14 @@ object ArrayModule extends AbstractFunctionModule {
             case _ =>
           }
           var current = initVal
-          val lazyArr = arr.asLazyArray
+          val direct = arr.directBackingArray
+          val len = if (direct == null) arr.length else direct.length
           val noOff = pos.noOffset
           var i = 0
-          while (i < lazyArr.length) {
+          while (i < len) {
             val c = current
-            current = func.apply2(c, lazyArr(i), noOff)(ev, TailstrictModeDisabled)
+            val elem = if (direct == null) arr.eval(i) else direct(i)
+            current = func.apply2(c, elem, noOff)(ev, TailstrictModeDisabled)
             i += 1
           }
           current
@@ -689,11 +710,12 @@ object ArrayModule extends AbstractFunctionModule {
       arr.value match {
         case arr: Val.Arr =>
           var current = init.value
-          val lazyArr = arr.asLazyArray
-          var i = lazyArr.length - 1
+          val direct = arr.directBackingArray
+          var i = (if (direct == null) arr.length else direct.length) - 1
           while (i >= 0) {
             val c = current
-            current = func.apply2(lazyArr(i), c, pos.noOffset)(ev, TailstrictModeDisabled)
+            val elem = if (direct == null) arr.eval(i) else direct(i)
+            current = func.apply2(elem, c, pos.noOffset)(ev, TailstrictModeDisabled)
             i -= 1
           }
           current
@@ -761,20 +783,18 @@ object ArrayModule extends AbstractFunctionModule {
     builtin("flatMap", "func", "arr") { (pos, ev, func: Val.Func, arr: Val) =>
       val res: Val = arr match {
         case a: Val.Arr =>
-          val src = a.asLazyArray
           val noOff = pos.noOffset
           // Two-pass: first collect sub-arrays and count total size,
           // then copy into a single pre-sized array
-          val subArrays = new Array[Array[Eval]](src.length)
+          val subArrays = new Array[Val.Arr](a.length)
           var totalLen = 0
           var i = 0
-          while (i < src.length) {
-            val fres = func.apply1(src(i), noOff)(ev, TailstrictModeDisabled)
+          while (i < a.length) {
+            val fres = func.apply1(a.eval(i), noOff)(ev, TailstrictModeDisabled)
             fres match {
               case va: Val.Arr =>
-                val sub = va.asLazyArray
-                subArrays(i) = sub
-                totalLen += sub.length
+                subArrays(i) = va
+                totalLen += va.length
               case unknown =>
                 Error.fail(
                   "std.flatMap on arrays, provided function must return an array, got " + unknown.prettyName
@@ -788,7 +808,11 @@ object ArrayModule extends AbstractFunctionModule {
           while (i < subArrays.length) {
             val sub = subArrays(i)
             if (sub != null) {
-              System.arraycopy(sub, 0, result, offset, sub.length)
+              var j = 0
+              while (j < sub.length) {
+                result(offset + j) = sub.eval(j)
+                j += 1
+              }
               offset += sub.length
             }
             i += 1
@@ -834,19 +858,18 @@ object ArrayModule extends AbstractFunctionModule {
     builtin("filterMap", "filter_func", "map_func", "arr") {
       (pos, ev, filter_func: Val.Func, map_func: Val.Func, arr: Val.Arr) =>
         val noOff = pos.noOffset
-        val src = arr.asLazyArray
         // Equivalent to std.map(map_func, std.filter(filter_func, arr)): callback args stay lazy.
         val b = new mutable.ArrayBuilder.ofRef[Eval]
-        b.sizeHint(src.length) // Worst case: all elements pass filter
+        b.sizeHint(arr.length) // Worst case: all elements pass filter
         var i = 0
-        while (i < src.length) {
-          val elem = src(i)
+        while (i < arr.length) {
+          val elem = arr.eval(i)
           if (filter_func.apply1(elem, noOff)(ev, TailstrictModeDisabled).asBoolean) {
-            b += new LazyApply1(map_func, elem, noOff, ev)
+            b += elem
           }
           i += 1
         }
-        Val.Arr(pos, b.result())
+        Val.Arr.mapped(pos, Val.Arr(pos, b.result()), map_func, noOff, ev)
     },
     /**
      * [[https://jsonnet.org/ref/stdlib.html#std-repeat std.repeat(what, count)]].
@@ -880,27 +903,17 @@ object ArrayModule extends AbstractFunctionModule {
      * initialize.
      */
     builtin("makeArray", "sz", "func") { (pos, ev, size: Val, func: Val.Func) =>
-      Val.Arr(
-        pos, {
-          val sz = size.cast[Val.Num].asPositiveInt
-          val a = new Array[Eval](sz)
-          val body = func.bodyExpr
-          if (func.params.names.length == 1 && body != null && body.isInstanceOf[Val.Literal]) {
-            // Function body is a constant (e.g. `function(_) 'x'`).
-            // Skip lazy thunk + Val.Num(index) allocation per element.
-            val constVal = body.asInstanceOf[Val]
-            java.util.Arrays.fill(a.asInstanceOf[Array[AnyRef]], constVal)
-          } else {
-            val noOff = pos.noOffset
-            var i = 0
-            while (i < sz) {
-              a(i) = new LazyApply1(func, Val.cachedNum(pos, i), noOff, ev)
-              i += 1
-            }
-          }
-          a
-        }
-      )
+      val sz = size.cast[Val.Num].asPositiveInt
+      val body = func.bodyExpr
+      if (func.params.names.length == 1 && body != null && body.isInstanceOf[Val.Literal]) {
+        // Function body is a constant (e.g. `function(_) 'x'`).
+        // Keep the eager shared-value array: it is smaller and faster than a lazy view here.
+        val a = new Array[Eval](sz)
+        java.util.Arrays.fill(a.asInstanceOf[Array[AnyRef]], body.asInstanceOf[Val])
+        Val.Arr(pos, a)
+      } else {
+        Val.Arr.makeArray(pos, sz, func, pos, pos.noOffset, ev)
+      }
     },
     /**
      * [[https://jsonnet.org/ref/stdlib.html#std-contains std.contains(arr, elem)]].
@@ -910,11 +923,10 @@ object ArrayModule extends AbstractFunctionModule {
      * Return true if given elem is present in arr, false otherwise.
      */
     builtin("contains", "arr", "elem") { (_, ev, arr: Val.Arr, elem: Val) =>
-      val la = arr.asLazyArray
       var i = 0
       var found = false
-      while (i < la.length && !found) {
-        if (ev.equal(la(i).value, elem)) found = true
+      while (i < arr.length && !found) {
+        if (ev.equal(arr.value(i), elem)) found = true
         i += 1
       }
       found
@@ -927,20 +939,26 @@ object ArrayModule extends AbstractFunctionModule {
      * Remove first occurrence of elem from arr.
      */
     builtin("remove", "arr", "elem") { (_, ev, arr: Val.Arr, elem: Val) =>
-      val la = arr.asLazyArray
       var idx = -1
       var i = 0
-      while (i < la.length && idx == -1) {
-        if (ev.equal(la(i).value, elem)) idx = i
+      while (i < arr.length && idx == -1) {
+        if (ev.equal(arr.value(i), elem)) idx = i
         i += 1
       }
       if (idx == -1) {
         arr
       } else {
-        Val.Arr(
-          arr.pos,
-          arr.asLazyArray.slice(0, idx) ++ arr.asLazyArray.slice(idx + 1, arr.length)
-        )
+        val result = new Array[Eval](arr.length - 1)
+        var j = 0
+        while (j < idx) {
+          result(j) = arr.eval(j)
+          j += 1
+        }
+        while (j < result.length) {
+          result(j) = arr.eval(j + 1)
+          j += 1
+        }
+        Val.Arr(arr.pos, result)
       }
     },
     /**
@@ -959,10 +977,17 @@ object ArrayModule extends AbstractFunctionModule {
       }
       if (removeIdx == -1) arr
       else {
-        Val.Arr(
-          arr.pos,
-          arr.asLazyArray.slice(0, removeIdx) ++ arr.asLazyArray.slice(removeIdx + 1, arr.length)
-        )
+        val result = new Array[Eval](arr.length - 1)
+        var i = 0
+        while (i < removeIdx) {
+          result(i) = arr.eval(i)
+          i += 1
+        }
+        while (i < result.length) {
+          result(i) = arr.eval(i + 1)
+          i += 1
+        }
+        Val.Arr(arr.pos, result)
       }
     },
     /**
@@ -973,17 +998,21 @@ object ArrayModule extends AbstractFunctionModule {
      * Return sum of all element in arr.
      */
     builtin("sum", "arr") { (_, _, arr: Val.Arr) =>
-      val a = arr.asLazyArray
-      var sum = 0.0
-      var i = 0
-      while (i < a.length) {
-        a(i).value match {
-          case n: Val.Num => sum += n.asDouble
-          case x          => Error.fail("std.sum expected number, got " + x.prettyName)
-        }
-        i += 1
+      arr match {
+        case r: Val.RangeArr => rangeSum(r)
+        case b: Val.ByteArr  => byteArraySum(b)
+        case _               =>
+          var sum = 0.0
+          var i = 0
+          while (i < arr.length) {
+            arr.value(i) match {
+              case n: Val.Num => sum += n.asDouble
+              case x          => Error.fail("std.sum expected number, got " + x.prettyName)
+            }
+            i += 1
+          }
+          sum
       }
-      sum
     },
     /**
      * [[https://jsonnet.org/ref/stdlib.html#std-avg std.avg(arr)]].
@@ -993,20 +1022,26 @@ object ArrayModule extends AbstractFunctionModule {
      * Return average of all element in arr.
      */
     builtin("avg", "arr") { (_, _, arr: Val.Arr) =>
-      val a = arr.asLazyArray
-      if (a.length == 0) {
+      if (arr.length == 0) {
         Error.fail("Cannot calculate average of an empty array")
       }
-      var sum = 0.0
-      var i = 0
-      while (i < a.length) {
-        a(i).value match {
-          case n: Val.Num => sum += n.asDouble
-          case x          => Error.fail("std.avg expected number, got " + x.prettyName)
-        }
-        i += 1
+      arr match {
+        case r: Val.RangeArr =>
+          (r.value(0).asDouble + r.value(r.length - 1).asDouble) / 2.0
+        case b: Val.ByteArr =>
+          byteArraySum(b) / b.length
+        case _ =>
+          var sum = 0.0
+          var i = 0
+          while (i < arr.length) {
+            arr.value(i) match {
+              case n: Val.Num => sum += n.asDouble
+              case x          => Error.fail("std.avg expected number, got " + x.prettyName)
+            }
+            i += 1
+          }
+          sum / arr.length
       }
-      sum / a.length
     }
   )
 }

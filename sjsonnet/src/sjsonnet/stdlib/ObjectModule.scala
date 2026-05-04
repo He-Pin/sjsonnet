@@ -524,7 +524,15 @@ object ObjectModule extends AbstractFunctionModule {
           } yield (k, new Val.Obj.ConstMember(false, Visibility.Normal, v))
           Val.Obj.mk(pos, bindings)
         case a: Val.Arr =>
-          Val.Arr(pos, a.asLazyArray.map(rec).filter(filter))
+          val out = new scala.collection.mutable.ArrayBuilder.ofRef[Eval]
+          out.sizeHint(a.length)
+          var i = 0
+          while (i < a.length) {
+            val v = rec(a.eval(i))
+            if (filter(v)) out += v
+            i += 1
+          }
+          Val.Arr(pos, out.result())
         case x => x
       }
       rec(s)
