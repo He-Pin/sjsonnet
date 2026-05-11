@@ -279,6 +279,11 @@ Rejected follow-ups from this checkpoint:
   `large_string_template`.
 - Exact `StringBuilder` sizing for repeated single-label `%` formats: neutral on
   `large_string_template` and negative on `realistic2`, so it was reverted.
+- Lazy stdlib construction for CLI startup: focused tests and three reviews passed
+  after preserving the `Interpreter#createOptimizer` subclass hook, but final
+  reverse-order Native A/B was negative (`large_string_template` `11.2 ms`
+  candidate vs `8.8 ms` clean, `base64` `6.9 ms` vs `4.0 ms`, and `/tmp/true`
+  `6.5 ms` vs `3.1 ms`), so it was reverted.
 
 Next priority remains a non-renderer route for large string template or another
 confirmed gap with a measurable same-run A/B win. The failed attempts above
