@@ -16,7 +16,7 @@ the matching workload.
 
 Branch: `perf/stacked-ready-gap-explore`
 
-Built from `upstream/master`, then stacked:
+Original stack was built from `upstream/master@0ae7b78a`, then stacked:
 
 | Source | Commit in stack | Included work |
 | --- | --- | --- |
@@ -33,6 +33,13 @@ The #834/#825 Native `CharSWAR` conflict was resolved by keeping the
 four-UTF-16-char `isAsciiJsonSafe` scan from #825 and the ascii-safe propagation
 call sites from #834. The stacked branch has no duplicate `isAsciiJsonSafe`
 definitions.
+
+Rebase checkpoint: the branch has now been rebased onto
+`upstream/master@1679892980e63e00945053eba02affca9dceae5f`. Upstream master now
+contains #825, #826, #827, #828, and #833, so Git skipped those already-applied
+commits during rebase. The branch still carries the focused #834-style ASCII
+substr work, accepted `jit-explore-2026` micro-optimizations, kube-prometheus
+strict-JSON optimizations, and this gap tracking report.
 
 ## Latest documented gaps vs jrsonnet
 
@@ -243,3 +250,36 @@ Rejected variants in this step:
 - Materialize still dominates (155ms of 180ms total, per prior debug stats).
 - Next targets should focus on Materializer/ByteRenderer efficiency (string escaping, container iteration, direct-to-output paths).
 - Large string template remains second priority (1.86x gap).
+
+---
+
+## Latest: post-upstream-rebase gap checkpoint
+
+After rebasing `perf/stacked-ready-gap-explore` onto
+`upstream/master@1679892980e63e00945053eba02affca9dceae5f`, the Native binary was
+rebuilt with `./mill --no-server -j 1 'sjsonnet.native[3.3.7]'.nativeLink` and
+selected `jrsonnet/docs` rows were re-smoked against source-built jrsonnet with
+`cmp`.
+
+| Workload | sjsonnet Scala Native stack | jrsonnet source release | Ratio / status |
+| --- | ---: | ---: | --- |
+| Go builtins / `std.base64` | `6.8 +/- 1.5 ms` | `2.2 +/- 0.4 ms` | sjsonnet is `3.03x` jrsonnet time; dominated by small-process/startup overhead plus rendering. |
+| Go builtins / `std.base64Decode` | `6.2 +/- 0.7 ms` | `2.2 +/- 0.3 ms` | sjsonnet is `2.78x` jrsonnet time. |
+| Go builtins / `std.base64DecodeBytes` | `14.0 +/- 1.4 ms` | `17.3 +/- 0.8 ms` | sjsonnet is faster (`0.81x` jrsonnet time). |
+| C++ perf_tests / large string template | `12.4 +/- 1.8 ms` | `3.3 +/- 0.6 ms` | sjsonnet is `3.77x` jrsonnet time; current largest rechecked gap. |
+| C++ benchmarks / big object | `11.1 +/- 2.3 ms` | `7.8 +/- 0.7 ms` | sjsonnet is `1.42x` jrsonnet time in this noisy recheck. |
+| Real world / kube-prometheus manifests | `151.5 +/- 20.8 ms` | `94.0 +/- 11.0 ms` | sjsonnet is `1.61x` jrsonnet time after the strict-JSON stack and upstream rebase. |
+
+Rejected follow-ups from this checkpoint:
+
+- Native base64 input/output copy trimming: output-correct, but same-run A/B did
+  not produce a stable positive signal and decode variants regressed the
+  `base64DecodeBytes` guard.
+- Long-string escaped-render collection: output-correct, but did not improve
+  `large_string_template`.
+- Exact `StringBuilder` sizing for repeated single-label `%` formats: neutral on
+  `large_string_template` and negative on `realistic2`, so it was reverted.
+
+Next priority remains a non-renderer route for large string template or another
+confirmed gap with a measurable same-run A/B win. The failed attempts above
+should not be repeated without a materially different hypothesis.
