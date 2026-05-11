@@ -309,6 +309,10 @@ Rejected follow-ups from this checkpoint:
   slower than the current `getBytes(UTF_8)` + byte SWAR path (`10.201 ms` clean
   vs `12.513 ms` candidate; reverse `13.821 ms` candidate vs `11.839 ms`
   clean), so it was reverted.
+- Direct `OutputStream` writes for huge strings: output-correct and JVM-test
+  clean, but writing many chunks/escapes directly was much slower than growing
+  `ByteBuilder` once (`10.997 ms` clean vs `14.886 ms` candidate; reverse
+  `14.558 ms` candidate vs `10.722 ms` clean), so it was reverted.
 - Lazy stdlib construction for CLI startup: focused tests and three reviews passed
   after preserving the `Interpreter#createOptimizer` subclass hook, but final
   reverse-order Native A/B was negative (`large_string_template` `11.2 ms`
@@ -349,8 +353,7 @@ prioritize format construction/evaluation and huge escaped-string rendering.
 | --- | --- | --- | --- | --- |
 | 1 | Source-offset labels | `Format.scanFormat` and `formatSimpleNamedString` | Keep label `(start,end)` offsets while scanning and allocate label `String`s only when the generic multi-label path actually needs them; same-label simple formats should avoid substring churn. | Medium; must preserve label equality and object lookup errors. |
 | 2 | Bulk-scan first text-block line | `Parser.tripleBarStringBody` | Extend the indexed-input scanner to include the first content line and prelude, not only lines after the first. | Medium; preserve fastparse error quality for malformed text blocks. |
-| 3 | Chunked huge-string flush | `BaseByteRenderer.visitLongString` | Stream huge escaped strings to the output in chunks instead of growing `elemBuilder` to the full escaped payload. | Medium; guard nested object/array rendering and many-medium-string workloads. |
-| 4 | Producer escape-count hint | `Format.formatSimpleNamedString` → `Val.Str` → `BaseByteRenderer` | While building a formatted string, count escapes and let the renderer size output without a pre-scan. | Medium; requires careful `Val.Str` layout/concurrency review. |
+| 3 | Producer escape-count hint | `Format.formatSimpleNamedString` → `Val.Str` → `BaseByteRenderer` | While building a formatted string, count escapes and let the renderer size output without a pre-scan. | Medium; requires careful `Val.Str` layout/concurrency review. |
 
 Rejected format micro-optimizations in this checkpoint were intentionally kept in
 the ledger so future split PR work can skip them unless the implementation route
