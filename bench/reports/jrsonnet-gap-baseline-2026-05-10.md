@@ -279,12 +279,33 @@ Rejected follow-ups from this checkpoint:
   `large_string_template`.
 - Exact `StringBuilder` sizing for repeated single-label `%` formats: neutral on
   `large_string_template` and negative on `realistic2`, so it was reverted.
+- A specialized `%(same_label)s` scanner/render path for `large_string_template`:
+  output-correct and JVM-test clean, but reverse-order Native A/B regressed
+  (`11.496 ms` candidate vs `11.202 ms` clean), so it was reverted.
 - Lazy stdlib construction for CLI startup: focused tests and three reviews passed
   after preserving the `Interpreter#createOptimizer` subclass hook, but final
   reverse-order Native A/B was negative (`large_string_template` `11.2 ms`
   candidate vs `8.8 ms` clean, `base64` `6.9 ms` vs `4.0 ms`, and `/tmp/true`
   `6.5 ms` vs `3.1 ms`), so it was reverted.
 
-Next priority remains a non-renderer route for large string template or another
-confirmed gap with a measurable same-run A/B win. The failed attempts above
-should not be repeated without a materially different hypothesis.
+Accepted follow-up from this checkpoint:
+
+- LF-only text-block line-end scanning: in the bulk `|||` parser path, replace
+  the Scala per-character line-end loop with `String.indexOf('\n')` when the
+  detected separator is a single LF. CRLF and other multi-character separators
+  stay on the prior loop path.
+  - Output equality: candidate Native output matched source-built jrsonnet for
+    `bench/resources/cpp_suite/large_string_template.jsonnet`.
+  - Reverse-order Native A/B against the frozen clean binary: candidate
+    `10.373 ms`, clean `11.191 ms` (`-7.3%`).
+  - Candidate vs source-built jrsonnet: candidate `10.552 +/- 0.656 ms`,
+    jrsonnet `5.611 +/- 0.826 ms`; remaining gap `1.88x`.
+  - Focused JMH guards: `large_string_template 0.683 ms/op`,
+    `realistic2 41.618 ms/op`, `gen_big_object 0.822 ms/op`,
+    `manifestJsonEx 0.052 ms/op`.
+  - Full `./mill --no-server -j 1 __.test` passed (`2066/2066`).
+
+Next priority remains a deeper non-renderer route for large string template, or
+another confirmed source-built gap with a measurable same-run A/B win. The
+failed attempts above should not be repeated without a materially different
+hypothesis.
