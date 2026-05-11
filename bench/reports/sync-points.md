@@ -78,3 +78,36 @@ only ideas that pass current semantic and benchmark gates.
 | Latest source-built big object comparison | Used `bench/resources/cpp_suite/gen_big_object.jsonnet`, verified stdout equality with `cmp`, then ran `hyperfine --shell=none --warmup 5 --min-runs 20`. sjsonnet Scala Native stack: `9.057 +/- 0.666 ms`; source-built jrsonnet: `8.972 +/- 0.819 ms`; result is effectively neutral (`1.01x`). |
 | Latest source-built realistic2 comparison | Used `bench/resources/cpp_suite/realistic2.jsonnet`, verified stdout equality with `cmp`, then ran `hyperfine --shell=none --warmup 3 --min-runs 10`. sjsonnet Scala Native stack: `83.932 +/- 1.629 ms`; source-built jrsonnet: `144.282 +/- 2.369 ms`; sjsonnet is faster (`0.58x` jrsonnet time). |
 | Latest source-built kube-prometheus comparison | Used `jrsonnet/tests/realworld/entry-kube-prometheus.jsonnet` from `jrsonnet/tests/realworld` with `-J vendor`. `jrb install` failed locally with a reqwest/rustls provider panic, so vendor deps were installed with `/tmp/sjsonnet-tools/jb install`. Verified stdout equality with `cmp` (`7,506,029` bytes), then ran `hyperfine --shell=none --warmup 3 --min-runs 10`. sjsonnet Scala Native stack: `235.971 +/- 12.925 ms`; source-built jrsonnet: `93.188 +/- 6.599 ms`; current local gap is `2.53x`. |
+| `MaterializeJsonRenderer` visitor reuse | Reused stateless array/object visitors for `std.manifestJson*`. Validation: `__.reformat`, `sjsonnet.jvm[3.3.7].test` (494/494), kube-prometheus output equality, focused JMH guards, and three independent reviews. Kube-prometheus Native stack improved to `224.975 +/- 11.550 ms` (`-4.66%` vs prior stack); source-built jrsonnet in the same run was `88.576 +/- 0.915 ms`, leaving a `2.54x` gap. |
+| `.json` import fast path | Added shared sync/Preloader strict-JSON parse path with duplicate-key, malformed JSON, non-finite number, large-integer, and parser-depth regression coverage. Validation: `__.reformat`, `sjsonnet.jvm[3.3.7].test` (502/502), full `__.test` (2066/2066), Native link, kube-prometheus output equality, focused JMH guards, and three independent reviews. Kube-prometheus Native stack improved to `139.242 +/- 1.204 ms`; source-built jrsonnet in the same run was `88.025 +/- 1.271 ms`, leaving a `1.58x` gap. |
+| `.json` import visitor micro-optimization | Validation: `__.reformat`, `sjsonnet.jvm[3.3.7].test` (502/502), full `__.test` (2066/2066), Native link, kube-prometheus output equality, focused JMH guards, and three independent reviews. Same-run Native A/B against frozen clean `e4fed2e4`: clean `141.526 +/- 1.896 ms`; candidate `139.088 +/- 1.305 ms`; source-built jrsonnet `87.421 +/- 0.932 ms`, leaving a `1.59x` same-run gap. |
+| `.json` import inline object layout | Validation: `__.reformat`, focused JVM JSON/concurrency tests, `sjsonnet.jvm[3.3.7].test` (503/503), full `__.test` (2066/2066), Native link, kube-prometheus output equality, focused JMH guards, and three final reviews. Same-run Native A/B against frozen clean `de5cd388`: clean `139.937 +/- 2.294 ms`; candidate `136.301 +/- 1.957 ms`; source-built jrsonnet `88.087 +/- 1.737 ms`, leaving a `1.55x` same-run gap. |
+
+---
+
+## 2026-05-11: JSON Position Reuse Optimization (Commit 24762a56)
+
+**Status**: ✅ Accepted & Pushed
+
+**Idea**: Strict `.json` imports (syntactically correct JSON, no code execution) create a Position object for each JSON scalar/container during traversal. Since JSON is static, all positions can safely reuse `fileScope.noOffsetPos` (a singleton sentinel used for input-less imports).
+
+**Implementation**: 
+- Modified `JsonImportVisitor.pos()` to return cached `jsonPos = fileScope.noOffsetPos` instead of allocating `new Position(fileScope, index)` per element.
+- 2-line change in `Importer.scala`.
+
+**Reasoning**: 
+- Position objects are only used for error reporting (stack frames).
+- Strict JSON never executes code, so no Position construction is needed during evaluation.
+- Position is immutable; sharing the singleton is safe.
+- Imported JSON trees are shared via ParseCache; concurrency-safe (JSON reads are cached).
+
+**Results**:
+- Kube-prometheus Native: `136.7 ± 1.5 ms` → `135.9 ± 1.2 ms` (-0.58%, repeat `137.5 → 136.1`).
+- Gap: `1.55x` → `1.54x` (vs jrsonnet 88.087 ms).
+- No regression: all JMH guards stable (manifestJsonEx 0.053, realistic2 39.485, large_string_template 1.102, gen_big_object 0.801).
+
+**Validation**: 
+- Formatting ✓, focused tests 8/8 ✓, JVM tests 503/503 ✓, full cross-platform 2066/2066 ✓, Native link ✓.
+- Output equality with source-built jrsonnet verified.
+
+**Next**: Remaining `1.54x` gap is still Materializer-dominated (155ms of 180ms total per prior debug stats). Profile ByteRenderer/escaping hot paths for next candidate.
