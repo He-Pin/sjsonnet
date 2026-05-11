@@ -282,6 +282,16 @@ Rejected follow-ups from this checkpoint:
 - A specialized `%(same_label)s` scanner/render path for `large_string_template`:
   output-correct and JVM-test clean, but reverse-order Native A/B regressed
   (`11.496 ms` candidate vs `11.202 ms` clean), so it was reverted.
+- Delaying `labelsBuilder` allocation in `scanFormat` for all-simple same-label
+  patterns: output-correct and JVM-test clean, but A/B was neutral (`9.337 ms`
+  clean vs `9.204 ms` candidate; reverse `10.650 ms` candidate vs `10.685 ms`
+  clean), so it was reverted.
+- Using `String.replace("%(key)s", value)` for all-simple same-label formats:
+  output-correct and JVM-test clean, but reverse Native A/B regressed (`11.443 ms`
+  candidate vs `10.568 ms` clean), so it was reverted.
+- A one-allocation `Array[Char]`/`getChars` renderer for all-simple same-label
+  formats: output-correct and JVM-test clean, but Native A/B regressed/noised out
+  (`9.959 ms` clean vs `10.510 ms` candidate), so it was reverted.
 - Lazy stdlib construction for CLI startup: focused tests and three reviews passed
   after preserving the `Interpreter#createOptimizer` subclass hook, but final
   reverse-order Native A/B was negative (`large_string_template` `11.2 ms`
@@ -309,3 +319,26 @@ Next priority remains a deeper non-renderer route for large string template, or
 another confirmed source-built gap with a measurable same-run A/B win. The
 failed attempts above should not be repeated without a materially different
 hypothesis.
+
+### Large string template optimization backlog
+
+The current gap is no longer in text-block line discovery alone. Temporary
+variants show that removing the final `% { x: 3 }` format step drops debug stats
+from roughly `parse 7.1 ms / eval 8.5 ms / materialize 2.1 ms` to
+`parse 0.7 ms / eval 1.2 ms / materialize 1.0 ms`, so the remaining work should
+prioritize format construction/evaluation and huge escaped-string rendering.
+
+| Priority | Candidate | Area | Hypothesis | Risk / guard |
+| --- | --- | --- | --- | --- |
+| 1 | Manual primitive arrays in `scanFormat` | `Format.scanFormat` | Replace `ArrayBuilder`/`ArrayList` with manually grown primitive arrays and one trim at the end; this differs from the rejected labelsBuilder-only micro-optimization by reducing all scanner-side builders. | Medium; guard `large_string_template`, `realistic2`, `gen_big_object`, `manifestJsonEx`. |
+| 2 | Source-offset labels | `Format.scanFormat` and `formatSimpleNamedString` | Keep label `(start,end)` offsets while scanning and allocate label `String`s only when the generic multi-label path actually needs them; same-label simple formats should avoid substring churn. | Medium; must preserve label equality and object lookup errors. |
+| 3 | Direct triple-bar string path | `Parser.tripleBarStringLines` / `tripleBarStringBodyBulk` | Return the final text-block string directly instead of wrapping the bulk-built result in `Seq[String]` plumbing before `constructString`. | Low-medium; guard malformed indentation and text-block newline semantics. |
+| 4 | Bulk-scan first text-block line | `Parser.tripleBarStringBody` | Extend the indexed-input scanner to include the first content line and prelude, not only lines after the first. | Medium; preserve fastparse error quality for malformed text blocks. |
+| 5 | Fuse long-string escape scans | `BaseByteRenderer.visitLongString` / `CharSWAR` | Current huge string rendering scans escape positions multiple times; a single SWAR pass that returns escaped length and positions could remove redundant scans without changing Unicode behavior. | Medium; guard kube-prometheus and Unicode-heavy strings. |
+| 6 | LATIN1/ASCII byte-source fast path | `BaseByteRenderer.visitLongString` | Avoid `str.getBytes(UTF_8)` allocation for LATIN1/ASCII strings while keeping the current byte escape loop; materially different from the rejected char-level renderer. | Medium-high; guard prior Unicode regression route. |
+| 7 | Chunked huge-string flush | `BaseByteRenderer.visitLongString` | Stream huge escaped strings to the output in chunks instead of growing `elemBuilder` to the full escaped payload. | Medium; guard nested object/array rendering and many-medium-string workloads. |
+| 8 | Producer escape-count hint | `Format.formatSimpleNamedString` → `Val.Str` → `BaseByteRenderer` | While building a formatted string, count escapes and let the renderer size output without a pre-scan. | Medium; requires careful `Val.Str` layout/concurrency review. |
+
+Rejected format micro-optimizations in this checkpoint were intentionally kept in
+the ledger so future split PR work can skip them unless the implementation route
+is materially different.
