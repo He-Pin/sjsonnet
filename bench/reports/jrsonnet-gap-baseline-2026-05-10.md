@@ -35,11 +35,12 @@ call sites from #834. The stacked branch has no duplicate `isAsciiJsonSafe`
 definitions.
 
 Rebase checkpoint: the branch has now been rebased onto
-`upstream/master@1679892980e63e00945053eba02affca9dceae5f`. Upstream master now
-contains #825, #826, #827, #828, and #833, so Git skipped those already-applied
-commits during rebase. The branch still carries the focused #834-style ASCII
-substr work, accepted `jit-explore-2026` micro-optimizations, kube-prometheus
-strict-JSON optimizations, and this gap tracking report.
+`upstream/master@ca61a7a3e3e35e3efe459453e3cb7e09eac9c0a7`. Upstream master now
+contains #825, #826, #827, #828, #833, #837, #838, #839, #840, and #841, so Git
+skipped those already-applied commits during rebase. The branch still carries the
+focused #834-style ASCII substr work, accepted `jit-explore-2026`
+micro-optimizations, kube-prometheus follow-up documentation, and this gap
+tracking report.
 
 ## Latest documented gaps vs jrsonnet
 
@@ -259,7 +260,9 @@ After rebasing `perf/stacked-ready-gap-explore` onto
 `upstream/master@1679892980e63e00945053eba02affca9dceae5f`, the Native binary was
 rebuilt with `./mill --no-server -j 1 'sjsonnet.native[3.3.7]'.nativeLink` and
 selected `jrsonnet/docs` rows were re-smoked against source-built jrsonnet with
-`cmp`.
+`cmp`. This checkpoint is retained as historical evidence; the branch has since
+been rebased again onto `upstream/master@ca61a7a3e3e35e3efe459453e3cb7e09eac9c0a7`
+and needs fresh Native/JMH numbers before any force-push.
 
 | Workload | sjsonnet Scala Native stack | jrsonnet source release | Ratio / status |
 | --- | ---: | ---: | --- |

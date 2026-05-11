@@ -8,7 +8,7 @@ idea is not repeated without new evidence.
 
 | Area | Ref | Notes |
 | --- | --- | --- |
-| Upstream master | `1679892980e63e00945053eba02affca9dceae5f` | Latest `databricks/sjsonnet` master fetched for this branch. Includes merged #825, #826, #827, #828, and #833. |
+| Upstream master | `ca61a7a3e3e35e3efe459453e3cb7e09eac9c0a7` | Latest `databricks/sjsonnet` master fetched for this branch. Includes merged #825, #826, #827, #828, #833, #837, #838, #839, #840, and #841. |
 | Historical JIT branch | `hepinssh/jit@9dc20016b0e2d1a061d1c0451ed555dcc46a0a33` | Source material only; do not mechanically rebase wholesale. |
 | Fresh exploration branch | `jit-explore-2026` | Clean branch from upstream master for benchmark-gated, atomic ports. |
 | Ready-PR stacked branch | `perf/stacked-ready-gap-explore` | Rebased onto latest upstream master. The branch now carries #834-style ASCII substr work, accepted `jit-explore-2026` micro-optimizations, kube-prometheus strict-JSON optimizations, and gap tracking docs. |
