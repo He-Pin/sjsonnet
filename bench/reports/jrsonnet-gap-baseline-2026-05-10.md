@@ -304,6 +304,11 @@ Rejected follow-ups from this checkpoint:
   output-correct and JVM-test clean, but Native A/B remained noise-level
   (`11.158 ms` clean vs `11.324 ms` candidate; reverse `10.508 ms` candidate vs
   `10.576 ms` clean), so it was reverted.
+- ASCII range byte-source rendering for long escaped strings: output-correct and
+  JVM-test clean, but the extra String scans and range copies were clearly
+  slower than the current `getBytes(UTF_8)` + byte SWAR path (`10.201 ms` clean
+  vs `12.513 ms` candidate; reverse `13.821 ms` candidate vs `11.839 ms`
+  clean), so it was reverted.
 - Lazy stdlib construction for CLI startup: focused tests and three reviews passed
   after preserving the `Interpreter#createOptimizer` subclass hook, but final
   reverse-order Native A/B was negative (`large_string_template` `11.2 ms`
@@ -344,9 +349,8 @@ prioritize format construction/evaluation and huge escaped-string rendering.
 | --- | --- | --- | --- | --- |
 | 1 | Source-offset labels | `Format.scanFormat` and `formatSimpleNamedString` | Keep label `(start,end)` offsets while scanning and allocate label `String`s only when the generic multi-label path actually needs them; same-label simple formats should avoid substring churn. | Medium; must preserve label equality and object lookup errors. |
 | 2 | Bulk-scan first text-block line | `Parser.tripleBarStringBody` | Extend the indexed-input scanner to include the first content line and prelude, not only lines after the first. | Medium; preserve fastparse error quality for malformed text blocks. |
-| 3 | LATIN1/ASCII byte-source fast path | `BaseByteRenderer.visitLongString` | Avoid `str.getBytes(UTF_8)` allocation for LATIN1/ASCII strings while keeping the current byte escape loop; materially different from the rejected char-level renderer. | Medium-high; guard prior Unicode regression route. |
-| 4 | Chunked huge-string flush | `BaseByteRenderer.visitLongString` | Stream huge escaped strings to the output in chunks instead of growing `elemBuilder` to the full escaped payload. | Medium; guard nested object/array rendering and many-medium-string workloads. |
-| 5 | Producer escape-count hint | `Format.formatSimpleNamedString` → `Val.Str` → `BaseByteRenderer` | While building a formatted string, count escapes and let the renderer size output without a pre-scan. | Medium; requires careful `Val.Str` layout/concurrency review. |
+| 3 | Chunked huge-string flush | `BaseByteRenderer.visitLongString` | Stream huge escaped strings to the output in chunks instead of growing `elemBuilder` to the full escaped payload. | Medium; guard nested object/array rendering and many-medium-string workloads. |
+| 4 | Producer escape-count hint | `Format.formatSimpleNamedString` → `Val.Str` → `BaseByteRenderer` | While building a formatted string, count escapes and let the renderer size output without a pre-scan. | Medium; requires careful `Val.Str` layout/concurrency review. |
 
 Rejected format micro-optimizations in this checkpoint were intentionally kept in
 the ledger so future split PR work can skip them unless the implementation route
