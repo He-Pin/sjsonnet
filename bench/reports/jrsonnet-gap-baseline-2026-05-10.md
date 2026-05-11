@@ -292,6 +292,10 @@ Rejected follow-ups from this checkpoint:
 - A one-allocation `Array[Char]`/`getChars` renderer for all-simple same-label
   formats: output-correct and JVM-test clean, but Native A/B regressed/noised out
   (`9.959 ms` clean vs `10.510 ms` candidate), so it was reverted.
+- Manually grown primitive arrays in `scanFormat`: output-correct and JVM-test
+  clean, but Native A/B was unstable/neutral (`10.209 ms` clean vs `10.526 ms`
+  candidate; reverse `10.245 ms` candidate vs `10.300 ms` clean), so it was
+  reverted.
 - Lazy stdlib construction for CLI startup: focused tests and three reviews passed
   after preserving the `Interpreter#createOptimizer` subclass hook, but final
   reverse-order Native A/B was negative (`large_string_template` `11.2 ms`
@@ -330,14 +334,13 @@ prioritize format construction/evaluation and huge escaped-string rendering.
 
 | Priority | Candidate | Area | Hypothesis | Risk / guard |
 | --- | --- | --- | --- | --- |
-| 1 | Manual primitive arrays in `scanFormat` | `Format.scanFormat` | Replace `ArrayBuilder`/`ArrayList` with manually grown primitive arrays and one trim at the end; this differs from the rejected labelsBuilder-only micro-optimization by reducing all scanner-side builders. | Medium; guard `large_string_template`, `realistic2`, `gen_big_object`, `manifestJsonEx`. |
-| 2 | Source-offset labels | `Format.scanFormat` and `formatSimpleNamedString` | Keep label `(start,end)` offsets while scanning and allocate label `String`s only when the generic multi-label path actually needs them; same-label simple formats should avoid substring churn. | Medium; must preserve label equality and object lookup errors. |
-| 3 | Direct triple-bar string path | `Parser.tripleBarStringLines` / `tripleBarStringBodyBulk` | Return the final text-block string directly instead of wrapping the bulk-built result in `Seq[String]` plumbing before `constructString`. | Low-medium; guard malformed indentation and text-block newline semantics. |
-| 4 | Bulk-scan first text-block line | `Parser.tripleBarStringBody` | Extend the indexed-input scanner to include the first content line and prelude, not only lines after the first. | Medium; preserve fastparse error quality for malformed text blocks. |
-| 5 | Fuse long-string escape scans | `BaseByteRenderer.visitLongString` / `CharSWAR` | Current huge string rendering scans escape positions multiple times; a single SWAR pass that returns escaped length and positions could remove redundant scans without changing Unicode behavior. | Medium; guard kube-prometheus and Unicode-heavy strings. |
-| 6 | LATIN1/ASCII byte-source fast path | `BaseByteRenderer.visitLongString` | Avoid `str.getBytes(UTF_8)` allocation for LATIN1/ASCII strings while keeping the current byte escape loop; materially different from the rejected char-level renderer. | Medium-high; guard prior Unicode regression route. |
-| 7 | Chunked huge-string flush | `BaseByteRenderer.visitLongString` | Stream huge escaped strings to the output in chunks instead of growing `elemBuilder` to the full escaped payload. | Medium; guard nested object/array rendering and many-medium-string workloads. |
-| 8 | Producer escape-count hint | `Format.formatSimpleNamedString` → `Val.Str` → `BaseByteRenderer` | While building a formatted string, count escapes and let the renderer size output without a pre-scan. | Medium; requires careful `Val.Str` layout/concurrency review. |
+| 1 | Source-offset labels | `Format.scanFormat` and `formatSimpleNamedString` | Keep label `(start,end)` offsets while scanning and allocate label `String`s only when the generic multi-label path actually needs them; same-label simple formats should avoid substring churn. | Medium; must preserve label equality and object lookup errors. |
+| 2 | Direct triple-bar string path | `Parser.tripleBarStringLines` / `tripleBarStringBodyBulk` | Return the final text-block string directly instead of wrapping the bulk-built result in `Seq[String]` plumbing before `constructString`. | Low-medium; guard malformed indentation and text-block newline semantics. |
+| 3 | Bulk-scan first text-block line | `Parser.tripleBarStringBody` | Extend the indexed-input scanner to include the first content line and prelude, not only lines after the first. | Medium; preserve fastparse error quality for malformed text blocks. |
+| 4 | Fuse long-string escape scans | `BaseByteRenderer.visitLongString` / `CharSWAR` | Current huge string rendering scans escape positions multiple times; a single SWAR pass that returns escaped length and positions could remove redundant scans without changing Unicode behavior. | Medium; guard kube-prometheus and Unicode-heavy strings. |
+| 5 | LATIN1/ASCII byte-source fast path | `BaseByteRenderer.visitLongString` | Avoid `str.getBytes(UTF_8)` allocation for LATIN1/ASCII strings while keeping the current byte escape loop; materially different from the rejected char-level renderer. | Medium-high; guard prior Unicode regression route. |
+| 6 | Chunked huge-string flush | `BaseByteRenderer.visitLongString` | Stream huge escaped strings to the output in chunks instead of growing `elemBuilder` to the full escaped payload. | Medium; guard nested object/array rendering and many-medium-string workloads. |
+| 7 | Producer escape-count hint | `Format.formatSimpleNamedString` → `Val.Str` → `BaseByteRenderer` | While building a formatted string, count escapes and let the renderer size output without a pre-scan. | Medium; requires careful `Val.Str` layout/concurrency review. |
 
 Rejected format micro-optimizations in this checkpoint were intentionally kept in
 the ledger so future split PR work can skip them unless the implementation route
