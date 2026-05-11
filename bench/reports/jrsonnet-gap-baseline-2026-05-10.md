@@ -341,6 +341,19 @@ another confirmed source-built gap with a measurable same-run A/B win. The
 failed attempts above should not be repeated without a materially different
 hypothesis.
 
+Rejected producer escape-count hint:
+
+- Tried precomputing JSON escape-extra length while producing a large formatted
+  string, storing the hint on `Val.Str`, and letting `BaseByteRenderer` size the
+  escaped byte output without its `escapedStringLength` scan.
+- Validation before benchmarking: formatting passed, JVM tests passed, Native
+  link passed, and output matched the clean branch for
+  `bench/resources/cpp_suite/large_string_template.jsonnet`.
+- Native A/B failed in both directions: forward clean `9.996 ms` vs candidate
+  `11.454 ms` (`+14.6%`); reverse candidate `11.577 ms` vs clean `10.514 ms`
+  (`+10.1%`). The producer-side scan plus wider `Val.Str` layout outweighed the
+  renderer pre-scan saving, so the runtime code was reverted.
+
 ### Large string template optimization backlog
 
 The current gap is no longer in text-block line discovery alone. Temporary
@@ -353,7 +366,6 @@ prioritize format construction/evaluation and huge escaped-string rendering.
 | --- | --- | --- | --- | --- |
 | 1 | Source-offset labels | `Format.scanFormat` and `formatSimpleNamedString` | Keep label `(start,end)` offsets while scanning and allocate label `String`s only when the generic multi-label path actually needs them; same-label simple formats should avoid substring churn. | Medium; must preserve label equality and object lookup errors. |
 | 2 | Bulk-scan first text-block line | `Parser.tripleBarStringBody` | Extend the indexed-input scanner to include the first content line and prelude, not only lines after the first. | Medium; preserve fastparse error quality for malformed text blocks. |
-| 3 | Producer escape-count hint | `Format.formatSimpleNamedString` → `Val.Str` → `BaseByteRenderer` | While building a formatted string, count escapes and let the renderer size output without a pre-scan. | Medium; requires careful `Val.Str` layout/concurrency review. |
 
 Rejected format micro-optimizations in this checkpoint were intentionally kept in
 the ledger so future split PR work can skip them unless the implementation route
