@@ -151,3 +151,95 @@ fused output path.
 | kube-prometheus Native hyperfine | Before: `235.971 +/- 12.925 ms`; after: `224.975 +/- 11.550 ms`; delta `-4.66%`. Source-built jrsonnet in the same candidate run: `88.576 +/- 0.915 ms`, so the remaining gap is `2.54x`. |
 | Focused JMH guards | `bench/resources/go_suite/manifestJsonEx.jsonnet`: `0.052 ms/op`; `bench/resources/cpp_suite/realistic2.jsonnet`: `40.068 ms/op`; `bench/resources/cpp_suite/large_string_template.jsonnet`: `1.137 ms/op`. |
 | Review | Independent `gpt-5.4`, `claude-opus-4.7`, and `claude-sonnet-4.6` code-review agents reported no significant issues. |
+
+Second accepted kube-prometheus experiment: parse strict `.json` imports directly
+into literal `Val` trees, falling back to the normal Jsonnet parser whenever the
+file is not strict JSON or the fast path would change observable semantics. This
+targets the very large Kubernetes CRD imports in the kube-prometheus vendor tree,
+where parse/import time dominated the remaining real-world gap.
+
+Semantic guardrails:
+
+- Only files whose resolved path ends in `.json` are attempted.
+- Invalid strict JSON, duplicate object keys, non-finite numbers, and parser-depth
+  overflow all fall back to the normal Jsonnet parser.
+- Large integer JSON numbers parse through Jsonnet's double number model rather
+  than `Long`, preserving existing accepted input.
+- The shared helper is used by both synchronous imports and Preloader/async
+  import discovery, avoiding sync-vs-async divergence.
+
+| Check | Result |
+| --- | --- |
+| Regression tests | Added `JsonImportFastPathTests` for strict JSON values, Jsonnet fallback, duplicate-key fallback, large integers, non-finite numbers, incomplete JSON, and recursion-depth fallback. Added a `PreloaderTests` case proving `.json` preload uses the fast path without fastparse. |
+| JVM tests | `./mill --no-server -j 1 'sjsonnet.jvm[3.3.7]'.test`: 502 passed, 0 failed. |
+| Full tests | `./mill --no-server -j 1 __.test`: success, 2066/2066 tasks. |
+| Native build | `./mill --no-server -j 1 'sjsonnet.native[3.3.7]'.nativeLink`: success. |
+| Native output smoke | `cmp` matched source-built jrsonnet output for `entry-kube-prometheus.jsonnet` (`-J vendor`), output size `7,506,029` bytes. |
+| kube-prometheus Native hyperfine | Before this experiment: `224.975 +/- 11.550 ms`; after: `139.242 +/- 1.204 ms`; delta `-38.11%`. Versus the original stacked baseline `235.971 +/- 12.925 ms`, total delta is `-40.99%`. Source-built jrsonnet in the same final run: `88.025 +/- 1.271 ms`, so the remaining gap is `1.58x`. |
+| Focused JMH guards | `bench/resources/go_suite/manifestJsonEx.jsonnet`: `0.052 ms/op`; `bench/resources/cpp_suite/realistic2.jsonnet`: `41.259 ms/op`; `bench/resources/cpp_suite/large_string_template.jsonnet`: `1.129 ms/op`; `bench/resources/cpp_suite/gen_big_object.jsonnet`: `0.845 ms/op`. |
+| Review | Independent `gpt-5.4`, `claude-opus-4.7`, and `claude-sonnet-4.6` code-review agents reported no significant issues after fixes for large-number parsing, incomplete JSON fallback, Preloader coverage, and parser-depth guard behavior. |
+
+Follow-up accepted micro-optimization inside the same strict `.json` import
+fast path: avoid a second duplicate-key map lookup by using the previous value
+returned from `HashMap.put`, and avoid `CharSequence.toString` when ujson has
+already provided a `String`.
+
+| Check | Result |
+| --- | --- |
+| JVM tests | `./mill --no-server -j 1 'sjsonnet.jvm[3.3.7]'.test`: 502 passed, 0 failed. |
+| Full tests | `./mill --no-server -j 1 __.test`: success, 2066/2066 tasks. |
+| Native build | `./mill --no-server -j 1 'sjsonnet.native[3.3.7]'.nativeLink`: success. |
+| Native output smoke | `cmp` matched source-built jrsonnet output for `entry-kube-prometheus.jsonnet` (`-J vendor`), output size `7,506,029` bytes. |
+| kube-prometheus Native A/B hyperfine | Same-run A/B with frozen clean `e4fed2e4` binary: clean `141.526 +/- 1.896 ms`; candidate `139.088 +/- 1.305 ms`; delta `-1.72%`. Source-built jrsonnet in the same run: `87.421 +/- 0.932 ms`, so the remaining same-run gap is `1.59x`. |
+| Focused JMH guards | `bench/resources/go_suite/manifestJsonEx.jsonnet`: `0.053 ms/op`; `bench/resources/cpp_suite/realistic2.jsonnet`: first combined run `44.130 ms/op`, rerun `40.195 ms/op`; `bench/resources/cpp_suite/large_string_template.jsonnet`: `1.129 ms/op`; `bench/resources/cpp_suite/gen_big_object.jsonnet`: `0.830 ms/op`. |
+| Rejected follow-ups | Static-object direct materialization and long ASCII string char-level escaping both failed the Native benchmark gate, so they were reverted and not included. |
+| Review | Independent `gpt-5.4`, `claude-opus-4.7`, and `claude-sonnet-4.6` code-review agents reported no significant issues. |
+
+Fourth accepted kube-prometheus experiment: keep strict `.json` imports in an
+inline object layout so the fused renderer/materializer can iterate imported JSON
+objects directly. The first version used the normal inline-object field cache,
+but review found that parse-cached imported literals may be shared by concurrent
+interpreters. The final version disables field caching for JSON import members,
+sets `_skipFieldCache`, and uses the inline-array representation even for
+0/1-field objects so stdlib field introspection does not lazily populate
+`value0` on shared literals.
+
+Rejected variants in this step:
+
+- Marking imported JSON strings as ASCII-safe during parse was output-correct but
+  benchmark-negative/noisy (`141.317 +/- 1.729 ms` clean vs `141.837 +/- 1.503 ms`
+  candidate for `>=128` chars; the `>1024` variant was not stable on repeat).
+- `cached=false` without `_skipFieldCache` did not remove materializer cache
+  writes, so it was superseded by the final race-free version.
+
+| Check | Result |
+| --- | --- |
+| Regression tests | Added JVM-only `JsonImportFastPathJvmTests` that shares a strict-JSON import through a concurrent parse cache across interpreters, materializes the whole object, selects fields, and calls `std.objectFields` on a single-field nested object. |
+| JVM tests | `./mill --no-server -j 1 'sjsonnet.jvm[3.3.7]'.test`: 503 passed, 0 failed. |
+| Full tests | `./mill --no-server -j 1 __.test`: success, 2066/2066 tasks. |
+| Native build | `./mill --no-server -j 1 'sjsonnet.native[3.3.7]'.nativeLink`: success. |
+| Native output smoke | `cmp` matched source-built jrsonnet output for `entry-kube-prometheus.jsonnet` (`-J vendor`), output size `7,506,029` bytes. |
+| kube-prometheus Native A/B hyperfine | Same-run A/B with frozen clean `de5cd388` binary: clean `139.937 +/- 2.294 ms`; candidate `136.301 +/- 1.957 ms`; delta `-2.60%`. Source-built jrsonnet in the same run: `88.087 +/- 1.737 ms`, so the remaining same-run gap is `1.55x`. |
+| Focused JMH guards | `bench/resources/go_suite/manifestJsonEx.jsonnet`: `0.053 ms/op`; `bench/resources/cpp_suite/realistic2.jsonnet`: `40.250 ms/op`; `bench/resources/cpp_suite/large_string_template.jsonnet`: `1.102 ms/op`; `bench/resources/cpp_suite/gen_big_object.jsonnet`: `0.826 ms/op`. |
+| Review | Independent `gpt-5.4`, `claude-opus-4.7`, and `claude-sonnet-4.6` reviews first identified and then confirmed fixes for shared-literal cache races and the single-field `getValue0` mutation path; final review reported no significant issues. |
+
+---
+
+## Latest: JSON Position Reuse (2026-05-11)
+
+**Kube-prometheus Scala Native** (after inline JSON objects + JSON position reuse):
+- sjsonnet stack: `136.1 ± 1.6 ms` (two-run average, same-run latest `135.9 ± 1.2 ms`)
+- Source-built jrsonnet: `88.087 ± 1.737 ms`
+- Gap: `1.54x` (down from `1.55x` after inline JSON objects; delta `-0.6%`)
+- **Cumulative improvement from baseline** (after all kube-focused optimizations):
+  - Visitor reuse (-4.66%): `235.97 → 224.97 ms`
+  - Fast-path imports (-40.99%): `224.97 → 139.24 ms`
+  - Trim visitor work (-1.72%): `139.24 → 136.88 ms`
+  - Inline JSON objects (-2.60%): `136.88 → 133.40 ms` (local A/B)
+  - JSON position reuse (-0.58%): `136.7 → 135.9 ms`
+  - **Total reduction**: ~42% from starting point of `~235 ms` to current `~136 ms`.
+
+**Analysis**:
+- Materialize still dominates (155ms of 180ms total, per prior debug stats).
+- Next targets should focus on Materializer/ByteRenderer efficiency (string escaping, container iteration, direct-to-output paths).
+- Large string template remains second priority (1.86x gap).
