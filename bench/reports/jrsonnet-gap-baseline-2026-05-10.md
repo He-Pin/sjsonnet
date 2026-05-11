@@ -354,18 +354,38 @@ Rejected producer escape-count hint:
   (`+10.1%`). The producer-side scan plus wider `Val.Str` layout outweighed the
   renderer pre-scan saving, so the runtime code was reverted.
 
+Rejected bulk-scan first text-block line:
+
+- Tried extending the indexed `|||` body scanner to include the first content
+  line, bypassing the fastparse `(CharsWhile ~ sep)` path and falling back only
+  when the first separator could not be verified.
+- Validation before benchmarking: formatting passed, JVM tests passed (`503/503`),
+  Native link passed, and output matched clean for
+  `bench/resources/cpp_suite/large_string_template.jsonnet`.
+- Native A/B did not clear the gate: forward clean `10.390 ms` vs candidate
+  `10.801 ms` (`+4.0%`); reverse was noise-dominated (`12.143 ms` candidate vs
+  `12.882 ms` clean, sd about `5 ms`); 40-run confirmation was neutral
+  (`12.339 ms` clean vs `12.262 ms` candidate, `-0.6%`). The runtime code was
+  reverted.
+
+Audited source-offset-label route:
+
+- The current `scanFormat` implementation already keeps source offsets for
+  literals, reuses the previous named label when the next label region matches,
+  and stores `labels = null` for all-simple same-label formats. For
+  `large_string_template`, that means the format path allocates one label string
+  and then uses `singleNamedLabel`; a separate source-offset-label rewrite would
+  not address the remaining measured gap.
+
 ### Large string template optimization backlog
 
-The current gap is no longer in text-block line discovery alone. Temporary
-variants show that removing the final `% { x: 3 }` format step drops debug stats
-from roughly `parse 7.1 ms / eval 8.5 ms / materialize 2.1 ms` to
-`parse 0.7 ms / eval 1.2 ms / materialize 1.0 ms`, so the remaining work should
-prioritize format construction/evaluation and huge escaped-string rendering.
-
-| Priority | Candidate | Area | Hypothesis | Risk / guard |
-| --- | --- | --- | --- | --- |
-| 1 | Source-offset labels | `Format.scanFormat` and `formatSimpleNamedString` | Keep label `(start,end)` offsets while scanning and allocate label `String`s only when the generic multi-label path actually needs them; same-label simple formats should avoid substring churn. | Medium; must preserve label equality and object lookup errors. |
-| 2 | Bulk-scan first text-block line | `Parser.tripleBarStringBody` | Extend the indexed-input scanner to include the first content line and prelude, not only lines after the first. | Medium; preserve fastparse error quality for malformed text blocks. |
+The known parser/format/renderer micro-routes for this workload are now either
+ported or rejected under same-run Native A/B. Temporary variants still show that
+removing the final `% { x: 3 }` format step drops debug stats from roughly
+`parse 7.1 ms / eval 8.5 ms / materialize 2.1 ms` to
+`parse 0.7 ms / eval 1.2 ms / materialize 1.0 ms`, but the remaining candidate
+needs a materially different design than the rejected scanner, renderer, and
+label-allocation variants.
 
 Rejected format micro-optimizations in this checkpoint were intentionally kept in
 the ledger so future split PR work can skip them unless the implementation route
