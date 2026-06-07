@@ -261,12 +261,13 @@ class ByteRenderer(out: OutputStream = new java.io.ByteArrayOutputStream(), inde
       if (obj.canDirectIterate) {
         if (ctx.sort) materializeDirectSortedInlineObj(obj, matDepth, ctx)
         else materializeDirectInlineObj(obj, matDepth, ctx)
-      } else obj match {
-        case shaped: Val.ShapedObj if !ctx.sort =>
-          materializeDirectShapedObj(shaped, matDepth, ctx)
-        case _ =>
-          materializeDirectGenericObj(obj, matDepth, ctx)
-      }
+      } else
+        obj match {
+          case shaped: Val.ShapedObj if !ctx.sort =>
+            materializeDirectShapedObj(shaped, matDepth, ctx)
+          case _ =>
+            materializeDirectGenericObj(obj, matDepth, ctx)
+        }
     } finally {
       ctx.exitObject(obj)
     }
@@ -427,10 +428,21 @@ class ByteRenderer(out: OutputStream = new java.io.ByteArrayOutputStream(), inde
 
     openObjBrace()
 
+    // For depth-1 chains (this + 1 super, no deeper), resolve fields via
+    // valueRaw directly, bypassing value()'s inline cache + HashMap cache checks.
+    // valueRaw returns the field value without populating the cache.
+    val sup = obj.getSuper
+    val directResolve = sup != null && sup.getSuper == null && !ctx.sort
+
     var i = 0
     while (i < keys.length) {
       val key = keys(i)
-      val childVal = obj.value(key, ctx.emptyPos)
+      val childVal =
+        if (directResolve) {
+          val v = obj.valueRaw(key, obj, ctx.emptyPos, null, null)
+          if (v == null) Error.fail("Field does not exist: " + key, obj.pos)
+          v
+        } else obj.value(key, ctx.emptyPos)
       renderKeyValue(key, childVal, matDepth, ctx)
       commaBuffered = true
       i += 1
