@@ -1690,132 +1690,15 @@ object Val {
     private[sjsonnet] val EMPTY_EVAL_ARRAY: Array[Eval] = Array.empty[Eval]
   }
 
-  /** Standard object backed by LinkedHashMap or inline arrays. */
-  final class MapObj(
-      _pos: Position,
-      _value0: util.LinkedHashMap[String, Obj.Member],
-      _static: Boolean,
-      _triggerAsserts: (Val.Obj, Val.Obj) => Unit,
-      _super: Obj,
-      _valueCache: util.HashMap[Any, Val] = null,
-      _allKeys: util.LinkedHashMap[String, java.lang.Boolean] = null,
-      _excludedKeys: java.util.Set[String] = null,
-      _singleFieldKey: String = null,
-      _singleFieldMember: Obj.Member = null,
-      _inlineFieldKeys: Array[String] = null,
-      _inlineFieldMembers: Array[Obj.Member] = null)
-      extends Obj(
-        _pos,
-        _value0,
-        _static,
-        _triggerAsserts,
-        _super,
-        _valueCache,
-        _allKeys,
-        _excludedKeys,
-        _singleFieldKey,
-        _singleFieldMember,
-        _inlineFieldKeys,
-        _inlineFieldMembers
-      )
-
-  object ObjShape {
-    final class FieldEntry(
-        val owner: Val.Obj,
-        val member: Val.Obj.Member,
-        val superEntry: FieldEntry)
-
-    def build(topObj: Val.Obj): ObjShape = {
-      val index = new java.util.HashMap[String, FieldEntry](32)
-      var allExcluded: java.util.HashSet[String] = null
-      var cur: Val.Obj = topObj
-      while (cur != null) {
-        val excluded = cur.excludedKeys
-        if (excluded != null) {
-          if (allExcluded == null) allExcluded = new java.util.HashSet[String](excluded)
-          else allExcluded.addAll(excluded)
-        }
-        val v0 = cur.getValue0
-        if (v0 != null) {
-          val iter = v0.entrySet().iterator()
-          while (iter.hasNext) {
-            val e = iter.next()
-            val key = e.getKey
-            if (allExcluded == null || !allExcluded.contains(key)) {
-              val prev = index.get(key)
-              if (prev == null)
-                index.put(key, new FieldEntry(cur, e.getValue, null))
-              else if (prev.member.add)
-                index.put(
-                  key,
-                  new FieldEntry(
-                    prev.owner,
-                    prev.member,
-                    new FieldEntry(cur, e.getValue, prev.superEntry)
-                  )
-                )
-            }
-          }
-        }
-        cur = cur.getSuper
-      }
-      new ObjShape(index)
-    }
-  }
-
-  final class ObjShape(
-      private[sjsonnet] val fieldIndex: java.util.HashMap[String, ObjShape.FieldEntry])
-
-  /** Object with pre-flattened field index for deep super chains. */
-  final class ShapedObj(
-      pos0: Position,
-      value0: util.LinkedHashMap[String, Obj.Member],
-      triggerAsserts0: (Val.Obj, Val.Obj) => Unit,
-      sup: Obj,
-      excludedKeys0: java.util.Set[String],
-      private[sjsonnet] val objShape: ObjShape)
-      extends Obj(pos0, value0, false, triggerAsserts0, sup, null, null, excludedKeys0) {
-
-    override def containsKey(k: String): Boolean =
-      objShape.fieldIndex.containsKey(k)
-
-    override def valueRaw(k: String, self: Obj, pos: Position, cacheOwner: Obj, cacheKey: Any)(
-        implicit evaluator: EvalScope): Val = {
-      val entry = objShape.fieldIndex.get(k)
-      if (entry == null) return null
-      resolveEntry(entry, self, pos, cacheOwner, cacheKey)
-    }
-
-    private def resolveEntry(
-        entry: ObjShape.FieldEntry,
-        self: Obj,
-        pos: Position,
-        cacheOwner: Obj,
-        cacheKey: Any)(implicit evaluator: EvalScope): Val = {
-      val m = entry.member
-      if (!evaluator.settings.brokenAssertionLogic || !m.deprecatedSkipAsserts)
-        self.triggerAllAsserts(evaluator.settings.brokenAssertionLogic)
-      val vv = m.invoke(self, entry.owner.getSuper, pos.fileScope, evaluator)
-      val v = if (m.add && entry.superEntry != null) {
-        val supVal = resolveEntry(entry.superEntry, self, pos, null, null)
-        if (supVal == null) vv else entry.owner.mergeMember(supVal, vv, pos)
-      } else vv
-      if (cacheOwner != null && m.cached) cacheOwner.putCache(cacheKey, v)
-      v
-    }
-  }
+  // ──────────────────────────────────────────────────────────────────────────────
+  // Obj companion — Member, ConstMember, mk factories
+  // ──────────────────────────────────────────────────────────────────────────────
 
   object Obj {
 
     /** Package-private ref to DebugStats, set by Evaluator when --debug-stats is active. */
     private[sjsonnet] var currentDebugStats: DebugStats = _
 
-    /**
-     * @param add
-     *   whether this field was defined the "+:", "+::" or "+:::" separators, corresponding to the
-     *   "nested field inheritance" language feature; see
-     *   https://jsonnet.org/ref/language.html#nested-field-inheritance
-     */
     abstract class Member(
         val add: Boolean,
         val visibility: Visibility,
@@ -1855,103 +1738,67 @@ object Val {
     }
   }
 
-  /**
-   * Represents json/jsonnet objects.
-   *
-   * Obj implements special optimizations for "static objects", which are objects without `super`
-   * where all fields are constant and have default visibility. Static objects can be created during
-   * parsing or in [[StaticOptimizer]].
-   *
-   * @param value0
-   *   maps fields to their Member definitions. This is initially null for static objects and is
-   *   non-null for non-static objects.
-   * @param static
-   *   true if this object is static, false otherwise.
-   * @param triggerAsserts
-   *   callback to evaluate assertions defined in the object. Parameters are (self, super).
-   * @param `super`
-   *   the super object, or null if there is no super object.
-   * @param valueCache
-   *   a cache for computed values. For static objects, this is pre-populated with all fields. For
-   *   non-static objects, this is lazily populated as fields are accessed.
-   * @param allKeys
-   *   a map of all keys in the object (including keys inherited from `super`), where the boolean
-   *   value is true if the key is hidden and false otherwise. For static objects, this is
-   *   pre-populated and the mapping may be interned and shared across instances. For non-static
-   *   objects, it is dynamically computed only if the object has a `super`
-   */
+  // ──────────────────────────────────────────────────────────────────────────────
+  // Obj — lean sealed abstract base class.
+  // Storage lives in MapObj/ShapedObj; Obj only holds shared fields.
+  // ──────────────────────────────────────────────────────────────────────────────
+
   sealed abstract class Obj(
       var pos: Position,
-      private var value0: util.LinkedHashMap[String, Obj.Member],
-      private val static: Boolean,
       private[Val] val triggerAsserts: (Val.Obj, Val.Obj) => Unit,
-      `super`: Obj,
-      private var valueCache: util.HashMap[Any, Val] = null,
-      private var allKeys: util.LinkedHashMap[String, java.lang.Boolean] = null,
-      private[Val] val excludedKeys: java.util.Set[String] = null,
-      private val singleFieldKey: String = null,
-      private val singleFieldMember: Obj.Member = null,
-      private val inlineFieldKeys: Array[String] = null,
-      private val inlineFieldMembers: Array[Obj.Member] = null)
+      private val `super`: Obj,
+      private[Val] val excludedKeys: java.util.Set[String] = null)
       extends Literal
       with Expr.ObjBody {
     private[sjsonnet] def valTag: Byte = TAG_OBJ
     private var asserting: Boolean = false
-    // Pre-computed flag: true if this object or any super has assert statements.
-    // Computed O(1) at construction from the super chain (super is already constructed).
-    // Allows skipping the triggerAllAsserts super-chain walk for assert-free objects.
     private val hasAnyAsserts: Boolean =
       triggerAsserts != null || (`super` != null && `super`.hasAnyAsserts)
 
-    // Inline value cache: avoids HashMap allocation for objects with ≤2 cached fields.
-    // For bench.02 (object fibonacci), this eliminates ~242K HashMap allocations (~37MB).
+    // Inline value cache: avoids HashMap allocation for objects with <=2 cached fields.
     private var ck1: Any = null
     private var cv1: Val = null
     private var ck2: Any = null
     private var cv2: Val = null
+    private var valueCacheOverflow: util.HashMap[Any, Val] = null
 
-    /** Store a computed value in the inline cache or overflow HashMap. */
     private[Val] def putCache(key: Any, v: Val): Unit = {
       if (ck1 == null) { ck1 = key; cv1 = v }
       else if (ck2 == null) { ck2 = key; cv2 = v }
       else {
-        if (valueCache == null) {
+        if (valueCacheOverflow == null) {
           val ds = Obj.currentDebugStats
           if (ds != null) ds.valueCacheOverflows += 1
-          valueCache = new util.HashMap[Any, Val]()
+          valueCacheOverflow = new util.HashMap[Any, Val]()
         }
-        valueCache.put(key, v)
+        valueCacheOverflow.put(key, v)
       }
     }
 
     def getSuper: Obj = `super`
+    @inline private[sjsonnet] def getExcludedKeys: java.util.Set[String] = excludedKeys
 
-    /**
-     * True if this object can be iterated directly via inline field arrays, bypassing the value()
-     * lookup chain (cache checks, valueRaw dispatch, key scan). Only safe when: no super chain, no
-     * excluded keys, and inline storage is present.
-     */
-    @inline private[sjsonnet] def canDirectIterate: Boolean =
-      `super` == null && excludedKeys == null && (singleFieldKey != null || inlineFieldKeys != null)
+    // --- Abstract: subclass-specific storage access ---
+    @inline private[sjsonnet] def canDirectIterate: Boolean
+    @inline private[sjsonnet] def inlineKeys: Array[String]
+    @inline private[sjsonnet] def inlineMembers: Array[Obj.Member]
+    @inline private[sjsonnet] def singleKey: String
+    @inline private[sjsonnet] def singleMem: Obj.Member
+    private[Val] def getValue0: util.LinkedHashMap[String, Obj.Member]
+    def containsKey(k: String): Boolean
+    def containsVisibleKey(k: String): Boolean
+    def hasKeys: Boolean
+    def allKeyNames: Array[String]
+    def visibleKeyNames: Array[String]
+    def valueRaw(k: String, self: Obj, pos: Position, cacheOwner: Obj, cacheKey: Any)(implicit
+        evaluator: EvalScope): Val
+    private[Val] def gatherKeysForSingle(
+        exclusionSet: java.util.Set[String],
+        mapping: util.LinkedHashMap[String, java.lang.Boolean]): Unit
 
-    /** Raw inline field keys array (may be null for single-field objects). */
-    @inline private[sjsonnet] def inlineKeys: Array[String] = inlineFieldKeys
+    // --- Shared concrete members ---
 
-    /** Raw inline field members array (may be null for single-field objects). */
-    @inline private[sjsonnet] def inlineMembers: Array[Obj.Member] = inlineFieldMembers
-
-    /** Single-field key (null if object has 0 or 2+ fields). */
-    @inline private[sjsonnet] def singleKey: String = singleFieldKey
-
-    /** Single-field member (null if object has 0 or 2+ fields). */
-    @inline private[sjsonnet] def singleMem: Obj.Member = singleFieldMember
-
-    /**
-     * Cached sorted field order for inline objects. Shared across all objects from the same
-     * MemberList to avoid per-object sort + allocation.
-     */
     private[sjsonnet] var _sortedInlineOrder: Array[Int] = null
-
     private[sjsonnet] var _sortedVisibleKeyNames: Array[String] = null
 
     private[sjsonnet] def sortedVisibleKeyNames: Array[String] = {
@@ -1964,72 +1811,18 @@ object Val {
       r
     }
 
-    /**
-     * When true, field caching can be skipped during materialization because no field body
-     * references `self` or `super`. This eliminates HashMap allocation overhead for objects with >2
-     * fields (where the 2-slot inline cache overflows).
-     */
     private[sjsonnet] var _skipFieldCache: Boolean = false
-
-    /**
-     * Reference to the source MemberList expression, set for objects with super == null. Enables
-     * lazy sharing of allKeyNames/visibleKeyNames: the first access computes and caches on the
-     * MemberList; subsequent objects from the same expression find the cached result.
-     */
     private[sjsonnet] var _sourceMemberList: Expr.ObjBody.MemberList = null
 
-    /**
-     * Store a computed field value in the object's inline cache, preserving memoization semantics
-     * when bypassing `value()` during direct iteration. This ensures that subsequent accesses via
-     * `self.field` within sibling field computations see the cached value, preventing double
-     * evaluation and duplicate side effects (e.g., `std.trace`).
-     */
     @inline private[sjsonnet] def cacheFieldValue(key: String, v: Val): Unit = putCache(key, v)
 
-    private[Val] def getValue0: util.LinkedHashMap[String, Obj.Member] = {
-      if (value0 == null) {
-        if (singleFieldKey != null) {
-          // Single-field object: lazily construct LinkedHashMap from inline storage
-          val m = Util.preSizedJavaLinkedHashMap[String, Val.Obj.Member](1)
-          m.put(singleFieldKey, singleFieldMember)
-          this.value0 = m
-        } else if (inlineFieldKeys != null) {
-          // Multi-field inline object: lazily construct LinkedHashMap from arrays
-          val keys = inlineFieldKeys
-          val members = inlineFieldMembers
-          val n = keys.length
-          val m = Util.preSizedJavaLinkedHashMap[String, Val.Obj.Member](n)
-          var i = 0
-          while (i < n) {
-            m.put(keys(i), members(i))
-            i += 1
-          }
-          this.value0 = m
-        } else {
-          // value0 is always defined for non-static objects, so if we're computing it here
-          // then that implies that the object is static and therefore valueCache should be
-          // pre-populated and all members should be visible and constant.
-          val value0 = Util.preSizedJavaLinkedHashMap[String, Val.Obj.Member](allKeys.size())
-          allKeys.forEach { (k, _) =>
-            value0.put(k, new Val.Obj.ConstMember(false, Visibility.Normal, valueCache.get(k)))
-          }
-          // Only assign to field after initialization is complete to allow unsynchronized multi-threaded use:
-          this.value0 = value0
-        }
-      }
-      value0
-    }
-
     def triggerAllAsserts(brokenAssertionLogic: Boolean): Unit = {
-      // Short-circuit: no asserts in this object or any super
       if (hasAnyAsserts && !asserting) {
         asserting = true
         triggerAllAsserts(this, `super`, brokenAssertionLogic)
       }
     }
 
-    // As we walk up the superclass hierarchy, the `self` binding is unchanged
-    // but `super` climbs up the hierarchy as well.
     @tailrec private def triggerAllAsserts(
         obj: Val.Obj,
         sup: Val.Obj,
@@ -2042,10 +1835,6 @@ object Val {
     def addSuper(pos: Position, lhs: Val.Obj): Val.Obj = {
       val ds = Obj.currentDebugStats
       if (ds != null) ds.addSuperCalls += 1
-      // Fast path: no super chain — avoid ArrayBuilder + Array allocation.
-      // Invariant: excludedKeys != null implies getSuper != null (removeKeys always sets super),
-      // so when getSuper == null, excludedKeys is always null and the re-introduction logic
-      // in the slow path is not needed.
       if (getSuper == null) {
         assert(excludedKeys == null, "excludedKeys should be null when getSuper is null")
         return new Val.MapObj(
@@ -2060,7 +1849,6 @@ object Val {
         )
       }
       if (ds != null) ds.addSuperChainWalks += 1
-      // Single traversal: collect chain in this-first order
       val builder = new mutable.ArrayBuilder.ofRef[Val.Obj]
       var current = this
       while (current != null) {
@@ -2071,14 +1859,12 @@ object Val {
       if (ds != null && chain.length > ds.maxSuperChainDepth)
         ds.maxSuperChainDepth = chain.length
 
-      // Pre-collect all keys defined in this chain once (only needed if any obj has excludedKeys)
       lazy val keysInThisChain: java.util.Set[String] = {
         val set = Util.preSizedJavaHashSet[String](chain.length * 4)
         for (s <- chain) set.addAll(s.getValue0.keySet())
         set
       }
 
-      // Iterate root-first (reverse of collection order) to build the new super chain
       current = lhs
       var i = chain.length - 1
       while (i >= 0) {
@@ -2088,9 +1874,6 @@ object Val {
           Util.intersect(s.excludedKeys, keysInThisChain)
         } else null
 
-        // If this object has excluded keys that the LHS provides, re-introduce them with synthetic
-        // members that delegate to the LHS. This ensures `lhs + removeKey(rhs, k)` preserves lhs's
-        // key `k`, including its visibility.
         if (filteredExcludedKeys != null) {
           val iter = filteredExcludedKeys.iterator()
           while (iter.hasNext) {
@@ -2121,7 +1904,7 @@ object Val {
           false,
           s.triggerAsserts,
           current,
-          null, // Inline cache handles ≤2 fields; overflow HashMap allocated lazily
+          null,
           null,
           filteredExcludedKeys
         )
@@ -2130,7 +1913,6 @@ object Val {
       val shape = ObjShape.build(current)
       new ShapedObj(
         current.pos,
-        current.getValue0,
         current.triggerAsserts,
         current.getSuper,
         current.excludedKeys,
@@ -2138,19 +1920,6 @@ object Val {
       )
     }
 
-    /**
-     * Create a new object that removes the specified keys from this object.
-     *
-     * The implementation preserves both internal and external inheritance:
-     *   1. Internal: For `objectRemoveKey({ a: 1 } + { b: super.a }, 'a')`, the original object's
-     *      internal super chain is preserved, so `b: super.a` can still access `a`.
-     *   2. External: For `{ a: 1 } + objectRemoveKey({ b: super.a }, 'a')`, the result can
-     *      participate in a new inheritance chain, where `super.a` accesses the new super.
-     *
-     * The approach is to create a thin wrapper object with the original object as super, and mark
-     * the key as excluded via the excludedKeys set. The excluded key won't appear in
-     * allKeyNames/visibleKeyNames, but super.key can still access the value.
-     */
     @nowarn("cat=deprecation")
     def removeKeys(pos: Position, keys: String*): Val.Obj = {
       val excluded =
@@ -2165,9 +1934,9 @@ object Val {
         pos,
         Util.emptyJavaLinkedHashMap[String, Obj.Member],
         false,
-        null, // No asserts in wrapper; original object's asserts are triggered via super chain
+        null,
         this,
-        null, // Inline cache handles ≤2 fields; overflow HashMap allocated lazily
+        null,
         null,
         excluded
       )
@@ -2176,14 +1945,11 @@ object Val {
     def prettyName = "object"
     override def asObj: Val.Obj = this
 
-    private def gatherKeys(mapping: util.LinkedHashMap[String, java.lang.Boolean]): Unit = {
-      // Fast path: no super chain — just copy this object's keys directly
+    private[Val] def gatherKeys(mapping: util.LinkedHashMap[String, java.lang.Boolean]): Unit = {
       if (this.getSuper == null) {
-        gatherKeysForSingle(this, null, mapping)
+        gatherKeysForSingle(null, mapping)
         return
       }
-
-      // Single traversal: collect chain in this-first order using ArrayBuilder
       val builder = new mutable.ArrayBuilder.ofRef[Val.Obj]
       var current = this
       while (current != null) {
@@ -2192,10 +1958,6 @@ object Val {
       }
       val chain = builder.result()
       val chainLength = chain.length
-
-      // Iterate root-first (reverse of collection order) and populate the mapping.
-      // Each object's excludedKeys removes keys gathered from lower levels (closer to root),
-      // but objects above it in the chain can re-introduce those keys via their own members.
       var i = chainLength - 1
       while (i >= 0) {
         val s = chain(i)
@@ -2203,183 +1965,25 @@ object Val {
           val iter = s.excludedKeys.iterator()
           while (iter.hasNext) mapping.remove(iter.next())
         }
-        gatherKeysForSingle(s, null, mapping)
+        s.gatherKeysForSingle(null, mapping)
         i -= 1
       }
     }
 
-    /** Gather keys from a single object into the mapping, filtering by exclusions. */
-    private def gatherKeysForSingle(
-        obj: Val.Obj,
-        exclusionSet: java.util.Set[String],
-        mapping: util.LinkedHashMap[String, java.lang.Boolean]): Unit = {
-      if (obj.static) {
-        obj.allKeys
-          .keySet()
-          .forEach(key => {
-            if (exclusionSet == null || !exclusionSet.contains(key)) {
-              mapping.put(key, false)
-            }
-          })
-      } else {
-        obj.getValue0.forEach { (k, m) =>
-          if (exclusionSet == null || !exclusionSet.contains(k)) {
-            val vis = m.visibility
-            if (!mapping.containsKey(k)) mapping.put(k, vis == Visibility.Hidden)
-            else if (vis == Visibility.Hidden) mapping.put(k, true)
-            else if (vis == Visibility.Unhide) mapping.put(k, false)
-          }
-        }
-      }
-    }
-
-    private def getAllKeys = {
-      if (allKeys == null) {
-        val allKeys = new util.LinkedHashMap[String, java.lang.Boolean]
-        gatherKeys(allKeys)
-        // Only assign to field after initialization is complete to allow unsynchronized multi-threaded use:
-        this.allKeys = allKeys
-      }
-      allKeys
-    }
-
-    @inline def hasKeys: Boolean = {
-      if (singleFieldKey != null) true
-      else if (inlineFieldKeys != null && `super` == null) inlineFieldKeys.length > 0
-      else {
-        val m = if (static || `super` != null) getAllKeys else getValue0
-        !m.isEmpty
-      }
-    }
-
-    @inline def containsKey(k: String): Boolean = {
-      if (singleFieldKey != null && `super` == null) singleFieldKey.equals(k)
-      else if (inlineFieldKeys != null && `super` == null) {
-        val keys = inlineFieldKeys
-        val n = keys.length
-        var i = 0
-        while (i < n) {
-          if (keys(i).equals(k)) return true
-          i += 1
-        }
-        false
-      } else {
-        val m = if (static || `super` != null) getAllKeys else getValue0
-        m.containsKey(k)
-      }
-    }
-
-    @inline def containsVisibleKey(k: String): Boolean = {
-      if (static || `super` != null) {
-        getAllKeys.get(k) == java.lang.Boolean.FALSE
-      } else if (inlineFieldKeys != null) {
-        val keys = inlineFieldKeys
-        val members = inlineFieldMembers
-        val n = keys.length
-        var i = 0
-        while (i < n) {
-          if (keys(i).equals(k)) return members(i).visibility != Visibility.Hidden
-          i += 1
-        }
-        false
-      } else {
-        val m = getValue0.get(k)
-        m != null && (m.visibility != Visibility.Hidden)
-      }
-    }
-
-    lazy val allKeyNames: Array[String] = {
-      val ml = _sourceMemberList
-      val cached = if (ml != null) ml._cachedAllKeyNames else null
-      if (cached != null) cached
-      else {
-        val result =
-          if (inlineFieldKeys != null && `super` == null) inlineFieldKeys.clone()
-          else {
-            val m = if (static || `super` != null) getAllKeys else getValue0
-            m.keySet().toArray(new Array[String](m.size()))
-          }
-        if (ml != null) ml._cachedAllKeyNames = result
-        result
-      }
-    }
-
-    lazy val visibleKeyNames: Array[String] = {
-      val ml = _sourceMemberList
-      val cached = if (ml != null) ml._cachedVisibleKeyNames else null
-      if (cached != null) cached
-      else {
-        val result = if (static) {
-          allKeyNames
-        } else if (inlineFieldKeys != null && `super` == null) {
-          // Inline multi-field fast path: check if all visible (common case)
-          val keys = inlineFieldKeys
-          val members = inlineFieldMembers
-          val n = keys.length
-          var allVisible = true
-          var i = 0
-          while (allVisible && i < n) {
-            if (members(i).visibility == Visibility.Hidden) allVisible = false
-            i += 1
-          }
-          if (allVisible) keys.clone()
-          else {
-            val buf = new mutable.ArrayBuilder.ofRef[String]
-            buf.sizeHint(n)
-            var j = 0
-            while (j < n) {
-              if (members(j).visibility != Visibility.Hidden) buf += keys(j)
-              j += 1
-            }
-            buf.result()
-          }
-        } else {
-          val buf = new mutable.ArrayBuilder.ofRef[String]
-          if (`super` == null) {
-            val v0 = getValue0
-            // This size hint is based on an optimistic assumption that most fields are visible,
-            // avoiding re-sizing or trimming the buffer in the common case:
-            buf.sizeHint(v0.size())
-            v0.forEach((k, m) => if (m.visibility != Visibility.Hidden) buf += k)
-          } else {
-            val iter = getAllKeys.entrySet().iterator()
-            while (iter.hasNext()) {
-              val e = iter.next()
-              if (e.getValue() == java.lang.Boolean.FALSE) buf += e.getKey()
-            }
-          }
-          buf.result()
-        }
-        if (ml != null) ml._cachedVisibleKeyNames = result
-        result
-      }
-    }
-
     def value(k: String, pos: Position, self: Obj = this)(implicit evaluator: EvalScope): Val = {
-      if (static) {
-        valueCache.get(k) match {
+      if ((self eq this) && excludedKeys != null && excludedKeys.contains(k)) {
+        Error.fail("Field does not exist: " + k, pos)
+      }
+      val cacheKey: Any = if (self eq this) k else (k, self)
+      if (ck1 != null && ck1 == cacheKey) return cv1
+      if (ck2 != null && ck2 == cacheKey) return cv2
+      val cachedValue =
+        if (valueCacheOverflow != null) valueCacheOverflow.get(cacheKey) else null
+      if (cachedValue != null) cachedValue
+      else {
+        valueRaw(k, self, pos, this, cacheKey) match {
           case null => Error.fail("Field does not exist: " + k, pos)
           case x    => x
-        }
-      } else {
-        if ((self eq this) && excludedKeys != null && excludedKeys.contains(k)) {
-          Error.fail("Field does not exist: " + k, pos)
-        }
-        val cacheKey: Any = if (self eq this) k else (k, self)
-        if (ck1 != null && ck1 == cacheKey) {
-          return cv1
-        }
-        if (ck2 != null && ck2 == cacheKey) {
-          return cv2
-        }
-        val cachedValue = if (valueCache != null) valueCache.get(cacheKey) else null
-        if (cachedValue != null) {
-          cachedValue
-        } else {
-          valueRaw(k, self, pos, this, cacheKey) match {
-            case null => Error.fail("Field does not exist: " + k, pos)
-            case x    => x
-          }
         }
       }
     }
@@ -2387,10 +1991,6 @@ object Val {
     private def renderString(v: Val)(implicit evaluator: EvalScope): String =
       evaluator.materialize(v).transform(new Renderer()).toString
 
-    /**
-     * Merge two values for "nested field inheritance"; see
-     * https://jsonnet.org/ref/language.html#nested-field-inheritance for background.
-     */
     private[Val] def mergeMember(l: Val, r: Val, pos: Position)(implicit
         evaluator: EvalScope): Literal =
       (l, r) match {
@@ -2414,18 +2014,210 @@ object Val {
           throw new MatchError((l, r))
       }
 
-    def valueRaw(k: String, self: Obj, pos: Position, cacheOwner: Obj = null, cacheKey: Any = null)(
-        implicit evaluator: EvalScope): Val = {
-      if (static) {
-        val v = valueCache.get(k)
+    def foreachElement(sort: Boolean, pos: Position)(f: (String, Val) => Unit)(implicit
+        ev: EvalScope): Unit = {
+      val keys = if (sort) sortedVisibleKeyNames else visibleKeyNames
+      for (k <- keys) {
+        val v = value(k, pos)
+        f(k, v)
+      }
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────────
+  // MapObj — standard object backed by LinkedHashMap or inline arrays.
+  // Owns all map/inline storage fields that were previously on Obj.
+  // ──────────────────────────────────────────────────────────────────────────────
+
+  final class MapObj(
+      _pos: Position,
+      _value0: util.LinkedHashMap[String, Obj.Member],
+      _static: Boolean,
+      _triggerAsserts: (Val.Obj, Val.Obj) => Unit,
+      _super: Obj,
+      _valueCache: util.HashMap[Any, Val] = null,
+      _allKeys: util.LinkedHashMap[String, java.lang.Boolean] = null,
+      _excludedKeys: java.util.Set[String] = null,
+      _singleFieldKey: String = null,
+      _singleFieldMember: Obj.Member = null,
+      _inlineFieldKeys: Array[String] = null,
+      _inlineFieldMembers: Array[Obj.Member] = null)
+      extends Obj(_pos, _triggerAsserts, _super, _excludedKeys) {
+
+    private var value0: util.LinkedHashMap[String, Obj.Member] = _value0
+    private val isStaticObj: Boolean = _static
+    private var staticValueCache: util.HashMap[Any, Val] = _valueCache
+    private var computedAllKeys: util.LinkedHashMap[String, java.lang.Boolean] = _allKeys
+    private val singleFieldKey: String = _singleFieldKey
+    private val singleFieldMember: Obj.Member = _singleFieldMember
+    private val inlineFieldKeys: Array[String] = _inlineFieldKeys
+    private val inlineFieldMembers: Array[Obj.Member] = _inlineFieldMembers
+
+    @inline private[sjsonnet] def canDirectIterate: Boolean =
+      getSuper == null && getExcludedKeys == null &&
+      (singleFieldKey != null || inlineFieldKeys != null)
+    @inline private[sjsonnet] def inlineKeys: Array[String] = inlineFieldKeys
+    @inline private[sjsonnet] def inlineMembers: Array[Obj.Member] = inlineFieldMembers
+    @inline private[sjsonnet] def singleKey: String = singleFieldKey
+    @inline private[sjsonnet] def singleMem: Obj.Member = singleFieldMember
+
+    private[Val] def getValue0: util.LinkedHashMap[String, Obj.Member] = {
+      if (value0 == null) {
+        if (singleFieldKey != null) {
+          val m = Util.preSizedJavaLinkedHashMap[String, Val.Obj.Member](1)
+          m.put(singleFieldKey, singleFieldMember)
+          this.value0 = m
+        } else if (inlineFieldKeys != null) {
+          val keys = inlineFieldKeys
+          val members = inlineFieldMembers
+          val n = keys.length
+          val m = Util.preSizedJavaLinkedHashMap[String, Val.Obj.Member](n)
+          var i = 0
+          while (i < n) {
+            m.put(keys(i), members(i))
+            i += 1
+          }
+          this.value0 = m
+        } else if (isStaticObj) {
+          val v0 = Util.preSizedJavaLinkedHashMap[String, Val.Obj.Member](computedAllKeys.size())
+          computedAllKeys.forEach { (k, _) =>
+            v0.put(k, new Val.Obj.ConstMember(false, Visibility.Normal, staticValueCache.get(k)))
+          }
+          this.value0 = v0
+        }
+      }
+      value0
+    }
+
+    private def getAllKeys: util.LinkedHashMap[String, java.lang.Boolean] = {
+      if (computedAllKeys == null) {
+        val ak = new util.LinkedHashMap[String, java.lang.Boolean]
+        gatherKeys(ak)
+        this.computedAllKeys = ak
+      }
+      computedAllKeys
+    }
+
+    @inline def hasKeys: Boolean = {
+      if (singleFieldKey != null) true
+      else if (inlineFieldKeys != null && getSuper == null) inlineFieldKeys.length > 0
+      else {
+        val m = if (isStaticObj || getSuper != null) getAllKeys else getValue0
+        !m.isEmpty
+      }
+    }
+
+    @inline def containsKey(k: String): Boolean = {
+      if (singleFieldKey != null && getSuper == null) singleFieldKey.equals(k)
+      else if (inlineFieldKeys != null && getSuper == null) {
+        val keys = inlineFieldKeys
+        val n = keys.length
+        var i = 0
+        while (i < n) {
+          if (keys(i).equals(k)) return true
+          i += 1
+        }
+        false
+      } else {
+        val m = if (isStaticObj || getSuper != null) getAllKeys else getValue0
+        m.containsKey(k)
+      }
+    }
+
+    @inline def containsVisibleKey(k: String): Boolean = {
+      if (isStaticObj || getSuper != null) {
+        getAllKeys.get(k) == java.lang.Boolean.FALSE
+      } else if (inlineFieldKeys != null) {
+        val keys = inlineFieldKeys
+        val members = inlineFieldMembers
+        val n = keys.length
+        var i = 0
+        while (i < n) {
+          if (keys(i).equals(k)) return members(i).visibility != Visibility.Hidden
+          i += 1
+        }
+        false
+      } else {
+        val m = getValue0.get(k)
+        m != null && (m.visibility != Visibility.Hidden)
+      }
+    }
+
+    lazy val allKeyNames: Array[String] = {
+      val ml = _sourceMemberList
+      val cached = if (ml != null) ml._cachedAllKeyNames else null
+      if (cached != null) cached
+      else {
+        val result =
+          if (inlineFieldKeys != null && getSuper == null) inlineFieldKeys.clone()
+          else {
+            val m = if (isStaticObj || getSuper != null) getAllKeys else getValue0
+            m.keySet().toArray(new Array[String](m.size()))
+          }
+        if (ml != null) ml._cachedAllKeyNames = result
+        result
+      }
+    }
+
+    lazy val visibleKeyNames: Array[String] = {
+      val ml = _sourceMemberList
+      val cached = if (ml != null) ml._cachedVisibleKeyNames else null
+      if (cached != null) cached
+      else {
+        val result = if (isStaticObj) {
+          allKeyNames
+        } else if (inlineFieldKeys != null && getSuper == null) {
+          val keys = inlineFieldKeys
+          val members = inlineFieldMembers
+          val n = keys.length
+          var allVisible = true
+          var i = 0
+          while (allVisible && i < n) {
+            if (members(i).visibility == Visibility.Hidden) allVisible = false
+            i += 1
+          }
+          if (allVisible) keys.clone()
+          else {
+            val buf = new mutable.ArrayBuilder.ofRef[String]
+            buf.sizeHint(n)
+            var j = 0
+            while (j < n) {
+              if (members(j).visibility != Visibility.Hidden) buf += keys(j)
+              j += 1
+            }
+            buf.result()
+          }
+        } else {
+          val buf = new mutable.ArrayBuilder.ofRef[String]
+          if (getSuper == null) {
+            val v0 = getValue0
+            buf.sizeHint(v0.size())
+            v0.forEach((k, m) => if (m.visibility != Visibility.Hidden) buf += k)
+          } else {
+            val iter = getAllKeys.entrySet().iterator()
+            while (iter.hasNext()) {
+              val e = iter.next()
+              if (e.getValue() == java.lang.Boolean.FALSE) buf += e.getKey()
+            }
+          }
+          buf.result()
+        }
+        if (ml != null) ml._cachedVisibleKeyNames = result
+        result
+      }
+    }
+
+    def valueRaw(k: String, self: Obj, pos: Position, cacheOwner: Obj, cacheKey: Any)(implicit
+        evaluator: EvalScope): Val = {
+      if (isStaticObj) {
+        val v = staticValueCache.get(k)
         if (cacheOwner != null && v != null) cacheOwner.putCache(cacheKey, v)
         v
       } else {
-        if (excludedKeys != null && excludedKeys.contains(k)) return null
-        val s = this.`super`
+        if (getExcludedKeys != null && getExcludedKeys.contains(k)) return null
+        val s = this.getSuper
         val sfk = singleFieldKey
         if (sfk != null) {
-          // Single-field fast path: avoid LinkedHashMap lookup
           if (sfk.equals(k)) {
             val m = singleFieldMember
             if (!evaluator.settings.brokenAssertionLogic || !m.deprecatedSkipAsserts) {
@@ -2444,7 +2236,6 @@ object Val {
             if (s == null) null else s.valueRaw(k, self, pos, cacheOwner, cacheKey)
           }
         } else if (inlineFieldKeys != null) {
-          // Inline multi-field fast path: linear scan over small arrays
           val keys = inlineFieldKeys
           val members = inlineFieldMembers
           val n = keys.length
@@ -2490,12 +2281,179 @@ object Val {
       }
     }
 
-    def foreachElement(sort: Boolean, pos: Position)(f: (String, Val) => Unit)(implicit
-        ev: EvalScope): Unit = {
-      val keys = if (sort) sortedVisibleKeyNames else visibleKeyNames
-      for (k <- keys) {
-        val v = value(k, pos)
-        f(k, v)
+    private[Val] def gatherKeysForSingle(
+        exclusionSet: java.util.Set[String],
+        mapping: util.LinkedHashMap[String, java.lang.Boolean]): Unit = {
+      if (isStaticObj) {
+        computedAllKeys
+          .keySet()
+          .forEach(key => {
+            if (exclusionSet == null || !exclusionSet.contains(key)) {
+              mapping.put(key, false)
+            }
+          })
+      } else {
+        getValue0.forEach { (k, m) =>
+          if (exclusionSet == null || !exclusionSet.contains(k)) {
+            val vis = m.visibility
+            if (!mapping.containsKey(k)) mapping.put(k, vis == Visibility.Hidden)
+            else if (vis == Visibility.Hidden) mapping.put(k, true)
+            else if (vis == Visibility.Unhide) mapping.put(k, false)
+          }
+        }
+      }
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────────
+  // ObjShape + ShapedObj
+  // ──────────────────────────────────────────────────────────────────────────────
+
+  object ObjShape {
+    final class FieldEntry(
+        val owner: Val.Obj,
+        val member: Val.Obj.Member,
+        val superEntry: FieldEntry)
+
+    def build(topObj: Val.Obj): ObjShape = {
+      val index = new java.util.HashMap[String, FieldEntry](32)
+      var allExcluded: java.util.HashSet[String] = null
+      var cur: Val.Obj = topObj
+      while (cur != null) {
+        val excluded = cur.getExcludedKeys
+        if (excluded != null) {
+          if (allExcluded == null) allExcluded = new java.util.HashSet[String](excluded)
+          else allExcluded.addAll(excluded)
+        }
+        val v0 = cur.getValue0
+        if (v0 != null) {
+          val iter = v0.entrySet().iterator()
+          while (iter.hasNext) {
+            val e = iter.next()
+            val key = e.getKey
+            if (allExcluded == null || !allExcluded.contains(key)) {
+              val prev = index.get(key)
+              if (prev == null)
+                index.put(key, new FieldEntry(cur, e.getValue, null))
+              else if (prev.member.add)
+                index.put(
+                  key,
+                  new FieldEntry(
+                    prev.owner,
+                    prev.member,
+                    new FieldEntry(cur, e.getValue, prev.superEntry)
+                  )
+                )
+            }
+          }
+        }
+        cur = cur.getSuper
+      }
+      new ObjShape(index)
+    }
+  }
+
+  final class ObjShape(
+      private[sjsonnet] val fieldIndex: java.util.HashMap[String, ObjShape.FieldEntry])
+
+  /** Object with pre-flattened field index for deep super chains. No LinkedHashMap storage. */
+  final class ShapedObj(
+      pos0: Position,
+      triggerAsserts0: (Val.Obj, Val.Obj) => Unit,
+      sup: Obj,
+      excludedKeys0: java.util.Set[String],
+      private[sjsonnet] val objShape: ObjShape)
+      extends Obj(pos0, triggerAsserts0, sup, excludedKeys0) {
+
+    @inline private[sjsonnet] def canDirectIterate: Boolean = false
+    @inline private[sjsonnet] def inlineKeys: Array[String] = null
+    @inline private[sjsonnet] def inlineMembers: Array[Obj.Member] = null
+    @inline private[sjsonnet] def singleKey: String = null
+    @inline private[sjsonnet] def singleMem: Obj.Member = null
+
+    def containsKey(k: String): Boolean =
+      objShape.fieldIndex.containsKey(k)
+
+    def containsVisibleKey(k: String): Boolean =
+      getAllKeys.get(k) == java.lang.Boolean.FALSE
+
+    @inline def hasKeys: Boolean = !getAllKeys.isEmpty
+
+    private var computedAllKeys: util.LinkedHashMap[String, java.lang.Boolean] = null
+
+    private def getAllKeys: util.LinkedHashMap[String, java.lang.Boolean] = {
+      if (computedAllKeys == null) {
+        val ak = new util.LinkedHashMap[String, java.lang.Boolean]
+        gatherKeys(ak)
+        this.computedAllKeys = ak
+      }
+      computedAllKeys
+    }
+
+    private[Val] def getValue0: util.LinkedHashMap[String, Obj.Member] = {
+      val idx = objShape.fieldIndex
+      val m = Util.preSizedJavaLinkedHashMap[String, Val.Obj.Member](idx.size())
+      val iter = idx.entrySet().iterator()
+      while (iter.hasNext) {
+        val e = iter.next()
+        m.put(e.getKey, e.getValue.member)
+      }
+      m
+    }
+
+    lazy val allKeyNames: Array[String] = {
+      val m = getAllKeys
+      m.keySet().toArray(new Array[String](m.size()))
+    }
+
+    lazy val visibleKeyNames: Array[String] = {
+      val buf = new mutable.ArrayBuilder.ofRef[String]
+      val iter = getAllKeys.entrySet().iterator()
+      while (iter.hasNext) {
+        val e = iter.next()
+        if (e.getValue() == java.lang.Boolean.FALSE) buf += e.getKey()
+      }
+      buf.result()
+    }
+
+    def valueRaw(k: String, self: Obj, pos: Position, cacheOwner: Obj, cacheKey: Any)(implicit
+        evaluator: EvalScope): Val = {
+      val entry = objShape.fieldIndex.get(k)
+      if (entry == null) return null
+      resolveEntry(entry, self, pos, cacheOwner, cacheKey)
+    }
+
+    private def resolveEntry(
+        entry: ObjShape.FieldEntry,
+        self: Obj,
+        pos: Position,
+        cacheOwner: Obj,
+        cacheKey: Any)(implicit evaluator: EvalScope): Val = {
+      val m = entry.member
+      if (!evaluator.settings.brokenAssertionLogic || !m.deprecatedSkipAsserts)
+        self.triggerAllAsserts(evaluator.settings.brokenAssertionLogic)
+      val vv = m.invoke(self, entry.owner.getSuper, pos.fileScope, evaluator)
+      val v = if (m.add && entry.superEntry != null) {
+        val supVal = resolveEntry(entry.superEntry, self, pos, null, null)
+        if (supVal == null) vv else entry.owner.mergeMember(supVal, vv, pos)
+      } else vv
+      if (cacheOwner != null && m.cached) cacheOwner.putCache(cacheKey, v)
+      v
+    }
+
+    private[Val] def gatherKeysForSingle(
+        exclusionSet: java.util.Set[String],
+        mapping: util.LinkedHashMap[String, java.lang.Boolean]): Unit = {
+      val iter = objShape.fieldIndex.entrySet().iterator()
+      while (iter.hasNext) {
+        val e = iter.next()
+        val k = e.getKey
+        if (exclusionSet == null || !exclusionSet.contains(k)) {
+          val vis = e.getValue.member.visibility
+          if (!mapping.containsKey(k)) mapping.put(k, vis == Visibility.Hidden)
+          else if (vis == Visibility.Hidden) mapping.put(k, true)
+          else if (vis == Visibility.Unhide) mapping.put(k, false)
+        }
       }
     }
   }

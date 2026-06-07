@@ -397,16 +397,17 @@ object ObjectModule extends AbstractFunctionModule {
           var i = 0
           while (i < keys.length) {
             val key = keys(i)
-            val rValue = if (r.containsVisibleKey(key)) r.valueRaw(key, r, pos)(ev) else null
+            val rValue =
+              if (r.containsVisibleKey(key)) r.valueRaw(key, r, pos, null, null)(ev) else null
             if (!rValue.isInstanceOf[Val.Null]) { // if we are not removing the key
               if (l.containsVisibleKey(key)) {
                 if (rValue == null) {
                   // Preserve the LHS/target value:
-                  kvs(kvsIdx) = (key, createLazyMember(l.valueRaw(key, l, pos)(ev)))
+                  kvs(kvsIdx) = (key, createLazyMember(l.valueRaw(key, l, pos, null, null)(ev)))
                 } else {
                   // Below, lValue is lazy so that we can short circuit and skip its
                   // evaluation when rValue is not an object:
-                  lazy val lValue = l.valueRaw(key, l, pos)(ev)
+                  lazy val lValue = l.valueRaw(key, l, pos, null, null)(ev)
                   if (rValue.isInstanceOf[Val.Obj] && lValue.isInstanceOf[Val.Obj]) {
                     // Recursively merge objects:
                     kvs(kvsIdx) = (key, createLazyMember(recPair(lValue, rValue)))
