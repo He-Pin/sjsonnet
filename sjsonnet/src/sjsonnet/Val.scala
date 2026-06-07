@@ -1832,7 +1832,7 @@ object Val {
     def mk(pos: Position, members: (String, Obj.Member)*): Obj = {
       val m = Util.preSizedJavaLinkedHashMap[String, Obj.Member](members.length)
       for ((k, v) <- members) m.put(k, v)
-      new Obj(pos, m, false, null, null)
+      new MapObj(pos, m, false, null, null)
     }
 
     def mk(pos: Position, sizeHint: Int, membersArray: Iterable[(String, Obj.Member)]*): Obj = {
@@ -1840,7 +1840,7 @@ object Val {
       for (members <- membersArray; (k, v) <- members) {
         m.put(k, v)
       }
-      new Obj(pos, m, false, null, null)
+      new MapObj(pos, m, false, null, null)
     }
 
     def mk(pos: Position, members: Array[(String, Obj.Member)]): Obj = {
@@ -1851,7 +1851,7 @@ object Val {
         m.put(e._1, e._2)
         i += 1
       }
-      new Obj(pos, m, false, null, null)
+      new MapObj(pos, m, false, null, null)
     }
   }
 
@@ -1880,7 +1880,7 @@ object Val {
    *   pre-populated and the mapping may be interned and shared across instances. For non-static
    *   objects, it is dynamically computed only if the object has a `super`
    */
-  sealed class Obj(
+  sealed abstract class Obj(
       var pos: Position,
       private var value0: util.LinkedHashMap[String, Obj.Member],
       private val static: Boolean,
