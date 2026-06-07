@@ -259,13 +259,13 @@ class ByteRenderer(out: OutputStream = new java.io.ByteArrayOutputStream(), inde
     try {
       obj.triggerAllAsserts(ctx.brokenAssertionLogic)
       if (obj.canDirectIterate) {
-        // Fast path: inline objects (no super chain, no excludedKeys).
-        // Bypasses visibleKeyNames allocation and value() HashMap lookup per key,
-        // invoking members directly by array index.
         if (ctx.sort) materializeDirectSortedInlineObj(obj, matDepth, ctx)
         else materializeDirectInlineObj(obj, matDepth, ctx)
-      } else {
-        materializeDirectGenericObj(obj, matDepth, ctx)
+      } else obj match {
+        case shaped: Val.ShapedObj if !ctx.sort =>
+          materializeDirectShapedObj(shaped, matDepth, ctx)
+        case _ =>
+          materializeDirectGenericObj(obj, matDepth, ctx)
       }
     } finally {
       ctx.exitObject(obj)
@@ -385,6 +385,35 @@ class ByteRenderer(out: OutputStream = new java.io.ByteArrayOutputStream(), inde
       // Single-field: sorted = unsorted
       materializeDirectInlineObj(obj, matDepth, ctx)
     }
+  }
+
+  /** ShapedObj rendering — resolves non-add values via shape, skipping value() cache wrapper. */
+  private def materializeDirectShapedObj(
+      shaped: Val.ShapedObj,
+      matDepth: Int,
+      ctx: Materializer.MaterializeContext)(implicit evaluator: EvalScope): Unit = {
+    val keys = shaped.visibleKeyNames
+    val shape = shaped.objShape
+    val fs = ctx.emptyPos.fileScope
+
+    openObjBrace()
+
+    var i = 0
+    while (i < keys.length) {
+      val key = keys(i)
+      val entry = shape.fieldIndex.get(key)
+      if (entry != null) {
+        val m = entry.member
+        val childVal =
+          if (!m.add) m.invoke(shaped, entry.owner.getSuper, fs, evaluator)
+          else shaped.value(key, ctx.emptyPos)
+        renderKeyValue(key, childVal, matDepth, ctx)
+        commaBuffered = true
+      }
+      i += 1
+    }
+
+    closeObjBrace()
   }
 
   /** Generic object rendering — uses visibleKeyNames + value() lookup. */
