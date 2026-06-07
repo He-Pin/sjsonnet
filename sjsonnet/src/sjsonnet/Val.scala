@@ -2039,6 +2039,15 @@ object Val {
         sup.triggerAllAsserts(obj, sup.getSuper, brokenAssertionLogic)
     }
 
+    private def chainHasExcludedKeys(obj: Val.Obj): Boolean = {
+      var cur = obj
+      while (cur != null) {
+        if (cur.excludedKeys != null) return true
+        cur = cur.getSuper
+      }
+      false
+    }
+
     def addSuper(pos: Position, lhs: Val.Obj): Val.Obj = {
       val ds = Obj.currentDebugStats
       if (ds != null) ds.addSuperCalls += 1
