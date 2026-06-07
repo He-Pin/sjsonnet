@@ -2054,7 +2054,7 @@ object Val {
           false,
           this.triggerAsserts,
           lhs,
-          null, // Inline cache handles ≤2 fields; overflow HashMap allocated lazily
+          null,
           null,
           null
         )
