@@ -373,10 +373,10 @@ object CachedResolver {
           val keyArray = keys.result()
           val memberArray = members.result()
           leaveContainer()
-          val obj = new Val.Obj(
+          val obj = new Val.MapObj(
             startPos,
             null,
-            static = false,
+            _static = false,
             null,
             null,
             null,

@@ -1690,6 +1690,121 @@ object Val {
     private[sjsonnet] val EMPTY_EVAL_ARRAY: Array[Eval] = Array.empty[Eval]
   }
 
+  /** Standard object backed by LinkedHashMap or inline arrays. */
+  final class MapObj(
+      _pos: Position,
+      _value0: util.LinkedHashMap[String, Obj.Member],
+      _static: Boolean,
+      _triggerAsserts: (Val.Obj, Val.Obj) => Unit,
+      _super: Obj,
+      _valueCache: util.HashMap[Any, Val] = null,
+      _allKeys: util.LinkedHashMap[String, java.lang.Boolean] = null,
+      _excludedKeys: java.util.Set[String] = null,
+      _singleFieldKey: String = null,
+      _singleFieldMember: Obj.Member = null,
+      _inlineFieldKeys: Array[String] = null,
+      _inlineFieldMembers: Array[Obj.Member] = null)
+      extends Obj(
+        _pos,
+        _value0,
+        _static,
+        _triggerAsserts,
+        _super,
+        _valueCache,
+        _allKeys,
+        _excludedKeys,
+        _singleFieldKey,
+        _singleFieldMember,
+        _inlineFieldKeys,
+        _inlineFieldMembers
+      )
+
+  object ObjShape {
+    final class FieldEntry(
+        val owner: Val.Obj,
+        val member: Val.Obj.Member,
+        val superEntry: FieldEntry)
+
+    def build(topObj: Val.Obj): ObjShape = {
+      val index = new java.util.HashMap[String, FieldEntry](32)
+      var allExcluded: java.util.HashSet[String] = null
+      var cur: Val.Obj = topObj
+      while (cur != null) {
+        val excluded = cur.excludedKeys
+        if (excluded != null) {
+          if (allExcluded == null) allExcluded = new java.util.HashSet[String](excluded)
+          else allExcluded.addAll(excluded)
+        }
+        val v0 = cur.getValue0
+        if (v0 != null) {
+          val iter = v0.entrySet().iterator()
+          while (iter.hasNext) {
+            val e = iter.next()
+            val key = e.getKey
+            if (allExcluded == null || !allExcluded.contains(key)) {
+              val prev = index.get(key)
+              if (prev == null)
+                index.put(key, new FieldEntry(cur, e.getValue, null))
+              else if (prev.member.add)
+                index.put(
+                  key,
+                  new FieldEntry(
+                    prev.owner,
+                    prev.member,
+                    new FieldEntry(cur, e.getValue, prev.superEntry)
+                  )
+                )
+            }
+          }
+        }
+        cur = cur.getSuper
+      }
+      new ObjShape(index)
+    }
+  }
+
+  final class ObjShape(
+      private[sjsonnet] val fieldIndex: java.util.HashMap[String, ObjShape.FieldEntry])
+
+  /** Object with pre-flattened field index for deep super chains. */
+  final class ShapedObj(
+      pos0: Position,
+      value0: util.LinkedHashMap[String, Obj.Member],
+      triggerAsserts0: (Val.Obj, Val.Obj) => Unit,
+      sup: Obj,
+      excludedKeys0: java.util.Set[String],
+      private[sjsonnet] val objShape: ObjShape)
+      extends Obj(pos0, value0, false, triggerAsserts0, sup, null, null, excludedKeys0) {
+
+    override def containsKey(k: String): Boolean =
+      objShape.fieldIndex.containsKey(k)
+
+    override def valueRaw(k: String, self: Obj, pos: Position, cacheOwner: Obj, cacheKey: Any)(
+        implicit evaluator: EvalScope): Val = {
+      val entry = objShape.fieldIndex.get(k)
+      if (entry == null) return null
+      resolveEntry(entry, self, pos, cacheOwner, cacheKey)
+    }
+
+    private def resolveEntry(
+        entry: ObjShape.FieldEntry,
+        self: Obj,
+        pos: Position,
+        cacheOwner: Obj,
+        cacheKey: Any)(implicit evaluator: EvalScope): Val = {
+      val m = entry.member
+      if (!evaluator.settings.brokenAssertionLogic || !m.deprecatedSkipAsserts)
+        self.triggerAllAsserts(evaluator.settings.brokenAssertionLogic)
+      val vv = m.invoke(self, entry.owner.getSuper, pos.fileScope, evaluator)
+      val v = if (m.add && entry.superEntry != null) {
+        val supVal = resolveEntry(entry.superEntry, self, pos, null, null)
+        if (supVal == null) vv else entry.owner.mergeMember(supVal, vv, pos)
+      } else vv
+      if (cacheOwner != null && m.cached) cacheOwner.putCache(cacheKey, v)
+      v
+    }
+  }
+
   object Obj {
 
     /** Package-private ref to DebugStats, set by Evaluator when --debug-stats is active. */
@@ -1765,15 +1880,15 @@ object Val {
    *   pre-populated and the mapping may be interned and shared across instances. For non-static
    *   objects, it is dynamically computed only if the object has a `super`
    */
-  final class Obj(
+  sealed class Obj(
       var pos: Position,
       private var value0: util.LinkedHashMap[String, Obj.Member],
       private val static: Boolean,
-      private val triggerAsserts: (Val.Obj, Val.Obj) => Unit,
+      private[Val] val triggerAsserts: (Val.Obj, Val.Obj) => Unit,
       `super`: Obj,
       private var valueCache: util.HashMap[Any, Val] = null,
       private var allKeys: util.LinkedHashMap[String, java.lang.Boolean] = null,
-      private val excludedKeys: java.util.Set[String] = null,
+      private[Val] val excludedKeys: java.util.Set[String] = null,
       private val singleFieldKey: String = null,
       private val singleFieldMember: Obj.Member = null,
       private val inlineFieldKeys: Array[String] = null,
@@ -1796,7 +1911,7 @@ object Val {
     private var cv2: Val = null
 
     /** Store a computed value in the inline cache or overflow HashMap. */
-    private def putCache(key: Any, v: Val): Unit = {
+    private[Val] def putCache(key: Any, v: Val): Unit = {
       if (ck1 == null) { ck1 = key; cv1 = v }
       else if (ck2 == null) { ck2 = key; cv2 = v }
       else {
@@ -1871,7 +1986,7 @@ object Val {
      */
     @inline private[sjsonnet] def cacheFieldValue(key: String, v: Val): Unit = putCache(key, v)
 
-    private def getValue0: util.LinkedHashMap[String, Obj.Member] = {
+    private[Val] def getValue0: util.LinkedHashMap[String, Obj.Member] = {
       if (value0 == null) {
         if (singleFieldKey != null) {
           // Single-field object: lazily construct LinkedHashMap from inline storage
@@ -1933,7 +2048,7 @@ object Val {
       // in the slow path is not needed.
       if (getSuper == null) {
         assert(excludedKeys == null, "excludedKeys should be null when getSuper is null")
-        return new Val.Obj(
+        return new Val.MapObj(
           this.pos,
           this.getValue0,
           false,
@@ -2000,7 +2115,7 @@ object Val {
           if (filteredExcludedKeys.isEmpty) filteredExcludedKeys = null
         }
 
-        current = new Val.Obj(
+        current = new Val.MapObj(
           s.pos,
           members,
           false,
@@ -2012,7 +2127,15 @@ object Val {
         )
         i -= 1
       }
-      current
+      val shape = ObjShape.build(current)
+      new ShapedObj(
+        current.pos,
+        current.getValue0,
+        current.triggerAsserts,
+        current.getSuper,
+        current.excludedKeys,
+        shape
+      )
     }
 
     /**
@@ -2038,7 +2161,7 @@ object Val {
           new util.HashSet[String](keys.asJavaCollection)
         }
 
-      new Val.Obj(
+      new Val.MapObj(
         pos,
         Util.emptyJavaLinkedHashMap[String, Obj.Member],
         false,
@@ -2268,7 +2391,8 @@ object Val {
      * Merge two values for "nested field inheritance"; see
      * https://jsonnet.org/ref/language.html#nested-field-inheritance for background.
      */
-    private def mergeMember(l: Val, r: Val, pos: Position)(implicit evaluator: EvalScope): Literal =
+    private[Val] def mergeMember(l: Val, r: Val, pos: Position)(implicit
+        evaluator: EvalScope): Literal =
       (l, r) match {
         case (lStr: Val.Str, rStr: Val.Str) =>
           Val.Str.concat(pos, lStr, rStr)
@@ -2416,7 +2540,7 @@ object Val {
         )
     }
     val fieldSet = new StaticObjectFieldSet(keys)
-    new Val.Obj(
+    new Val.MapObj(
       pos,
       null,
       true,

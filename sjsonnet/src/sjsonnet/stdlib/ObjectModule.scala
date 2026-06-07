@@ -200,14 +200,14 @@ object ObjectModule extends AbstractFunctionModule {
       val keys = obj.visibleKeyNames
       val n = keys.length
       if (n == 1) {
-        new Val.Obj(
+        new Val.MapObj(
           pos,
           null,
           false,
           null,
           null,
-          singleFieldKey = keys(0),
-          singleFieldMember = new MapWithKeyMember(func, obj, keys(0), pos)
+          _singleFieldKey = keys(0),
+          _singleFieldMember = new MapWithKeyMember(func, obj, keys(0), pos)
         )
       } else if (n <= 8) {
         val members = new Array[Val.Obj.Member](n)
@@ -216,14 +216,14 @@ object ObjectModule extends AbstractFunctionModule {
           members(i) = new MapWithKeyMember(func, obj, keys(i), pos)
           i += 1
         }
-        new Val.Obj(
+        new Val.MapObj(
           pos,
           null,
           false,
           null,
           null,
-          inlineFieldKeys = keys,
-          inlineFieldMembers = members
+          _inlineFieldKeys = keys,
+          _inlineFieldMembers = members
         )
       } else {
         val m = Util.preSizedJavaLinkedHashMap[String, Val.Obj.Member](n)
@@ -232,7 +232,7 @@ object ObjectModule extends AbstractFunctionModule {
           m.put(keys(i), new MapWithKeyMember(func, obj, keys(i), pos))
           i += 1
         }
-        new Val.Obj(pos, m, false, null, null)
+        new Val.MapObj(pos, m, false, null, null)
       }
     }
   }

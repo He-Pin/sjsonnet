@@ -1819,14 +1819,14 @@ class Evaluator(
     if (debugStats != null) debugStats.objectsCreated += 1
     factory.cachedObj = if (fieldCount == 1 && singleKey != null) {
       // Single-field object: store key and member inline, avoid LinkedHashMap allocation entirely
-      val obj = new Val.Obj(
+      val obj = new Val.MapObj(
         objPos,
         null,
         false,
         if (asserts != null) triggerAsserts else null,
         sup,
-        singleFieldKey = singleKey,
-        singleFieldMember = singleMember
+        _singleFieldKey = singleKey,
+        _singleFieldMember = singleMember
       )
       if (noSelfRef) obj._skipFieldCache = true
       obj
@@ -1838,14 +1838,14 @@ class Evaluator(
       val finalMembers =
         if (fieldCount == inlineMembers.length) inlineMembers
         else java.util.Arrays.copyOf(inlineMembers, fieldCount)
-      val obj = new Val.Obj(
+      val obj = new Val.MapObj(
         objPos,
         null,
         false,
         if (asserts != null) triggerAsserts else null,
         sup,
-        inlineFieldKeys = finalKeys,
-        inlineFieldMembers = finalMembers
+        _inlineFieldKeys = finalKeys,
+        _inlineFieldMembers = finalMembers
       )
       // Cache sorted field order on MemberList (shared across all objects from same expression).
       // Only safe when all field names are fixed (not computed at runtime).
@@ -1858,7 +1858,7 @@ class Evaluator(
       if (noSelfRef) obj._skipFieldCache = true
       obj
     } else {
-      new Val.Obj(
+      new Val.MapObj(
         objPos,
         if (builder != null) builder
         else Util.preSizedJavaLinkedHashMap[String, Val.Obj.Member](0),
@@ -1945,14 +1945,14 @@ class Evaluator(
     }
     if (debugStats != null) debugStats.objectsCreated += 1
     if (fieldCount == 1 && singleKey != null) {
-      new Val.Obj(
+      new Val.MapObj(
         e.pos,
         null,
         false,
         null,
         sup,
-        singleFieldKey = singleKey,
-        singleFieldMember = singleMember
+        _singleFieldKey = singleKey,
+        _singleFieldMember = singleMember
       )
     } else if (inlineKeys != null && fieldCount >= 2) {
       val finalKeys =
@@ -1961,17 +1961,17 @@ class Evaluator(
       val finalMembers =
         if (fieldCount == inlineMembers.length) inlineMembers
         else java.util.Arrays.copyOf(inlineMembers, fieldCount)
-      new Val.Obj(
+      new Val.MapObj(
         e.pos,
         null,
         false,
         null,
         sup,
-        inlineFieldKeys = finalKeys,
-        inlineFieldMembers = finalMembers
+        _inlineFieldKeys = finalKeys,
+        _inlineFieldMembers = finalMembers
       )
     } else {
-      new Val.Obj(
+      new Val.MapObj(
         e.pos,
         if (builder != null) builder
         else Util.preSizedJavaLinkedHashMap[String, Val.Obj.Member](0),
