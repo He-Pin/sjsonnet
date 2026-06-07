@@ -104,31 +104,64 @@ abstract class Materializer {
       storePos(obj.pos)
       obj.triggerAllAsserts(ctx.brokenAssertionLogic)
       if (obj.canDirectIterate) {
-        // Fast path for inline objects (1-8 fields, no super chain, no excludedKeys).
-        // Bypasses visibleKeyNames allocation, value() HashMap lookup per key,
-        // and sortedVisibleKeyNames lazy val. Instead iterates raw arrays directly.
         if (ctx.sort) materializeSortedInlineObj(obj, visitor, depth, ctx)
         else materializeInlineObj(obj, visitor, depth, ctx)
-      } else {
-        val keys =
-          if (ctx.sort) obj.sortedVisibleKeyNames
-          else obj.visibleKeyNames
-        val ov = visitor.visitObject(keys.length, jsonableKeys = true, -1)
-        var i = 0
-        while (i < keys.length) {
-          val key = keys(i)
-          val childVal = obj.value(key, ctx.emptyPos)
-          storePos(childVal)
-          ov.visitKeyValue(ov.visitKey(-1).visitString(key, -1))
-          val sub = ov.subVisitor.asInstanceOf[Visitor[T, T]]
-          ov.visitValue(materializeRecursiveChild(childVal, sub, depth, ctx), -1)
-          i += 1
+      } else
+        obj match {
+          case shaped: Val.ShapedObj if !ctx.sort =>
+            materializeShapedObj(shaped, visitor, depth, ctx)
+          case _ =>
+            val keys =
+              if (ctx.sort) obj.sortedVisibleKeyNames
+              else obj.visibleKeyNames
+            val ov = visitor.visitObject(keys.length, jsonableKeys = true, -1)
+            var i = 0
+            while (i < keys.length) {
+              val key = keys(i)
+              val childVal = obj.value(key, ctx.emptyPos)
+              storePos(childVal)
+              ov.visitKeyValue(ov.visitKey(-1).visitString(key, -1))
+              val sub = ov.subVisitor.asInstanceOf[Visitor[T, T]]
+              ov.visitValue(materializeRecursiveChild(childVal, sub, depth, ctx), -1)
+              i += 1
+            }
+            ov.visitEnd(-1)
         }
-        ov.visitEnd(-1)
-      }
     } finally {
       ctx.exitObject(obj)
     }
+  }
+
+  /**
+   * Direct iteration for ShapedObj. Uses visibleKeyNames for ordering but resolves values via the
+   * shape's flattened index, bypassing value()/valueRaw() cache checks and super chain walks.
+   */
+  private def materializeShapedObj[T](
+      shaped: Val.ShapedObj,
+      visitor: Visitor[T, T],
+      depth: Int,
+      ctx: Materializer.MaterializeContext)(implicit evaluator: EvalScope): T = {
+    val keys = shaped.visibleKeyNames
+    val shape = shaped.objShape
+    val ov = visitor.visitObject(keys.length, jsonableKeys = true, -1)
+    val fs = ctx.emptyPos.fileScope
+    var i = 0
+    while (i < keys.length) {
+      val key = keys(i)
+      val entry = shape.fieldIndex.get(key)
+      if (entry != null) {
+        val m = entry.member
+        val childVal =
+          if (!m.add) m.invoke(shaped, entry.owner.getSuper, fs, evaluator)
+          else shaped.value(key, ctx.emptyPos)
+        storePos(childVal)
+        ov.visitKeyValue(ov.visitKey(-1).visitString(key, -1))
+        val sub = ov.subVisitor.asInstanceOf[Visitor[T, T]]
+        ov.visitValue(materializeRecursiveChild(childVal, sub, depth, ctx), -1)
+      }
+      i += 1
+    }
+    ov.visitEnd(-1)
   }
 
   /**
