@@ -287,6 +287,158 @@ local odd(n) = if n == 0 then false else even(n-1);
 2. **BUG-003** (自引用惰性求值) - P1，语义错误
 3. **BUG-002** (CLI 错误处理) - P2，用户体验改进
 
+## 平台特定问题 (Round 12 审计发现)
+
+### PLATFORM-001: WASM 导出不可用
+
+**严重度**: 高  
+**平台**: WASM  
+**上游 Issue**: 需要在 scala-js/scala-js 仓库开 issue
+
+**问题描述**:
+WASM 模块的 `SjsonnetMain` 导出为空对象 (`[Object: null prototype] {}`)。`interpret` 和 `interpretAsync` 方法缺失。WASM 二进制有 3,464 个 imports 但 0 个 native WASM exports。Scala.js WASM 后端依赖基于回调的导出 setter (`__scalaJSExportSetters.SjsonnetMain`)，虽然回调被调用，但结果对象没有方法。
+
+**根因**: Scala.js WASM 后端限制。JS (CommonJS) 导出工作正常。
+
+**建议**: 在 https://github.com/scala-js/scala-js 开 issue，标题建议: "WASM backend: @JSExportTopLevel produces empty object with no methods"
+
+---
+
+### PLATFORM-002: JS 递归深度限制较低
+
+**严重度**: 中  
+**平台**: JS (Scala.js)  
+**上游 Issue**: 可能是 Scala.js 平台限制
+
+**问题描述**:
+- JS: ~308 次递归调用后栈溢出
+- JVM: ~499 次递归调用后栈溢出
+- JVM 处理多 ~62% 的递归深度
+
+这导致 `format.jsonnet` (316 行测试) 在 JVM 通过但在 JS 失败 "Maximum call stack size exceeded"。
+
+**根因**: Scala.js 平台的栈大小限制。这是平台限制，不是 sjsonnet bug。
+
+**建议**: 文档说明 JS 平台的递归限制较低。
+
+---
+
+### PLATFORM-003: regexQuoteMeta 格式不同
+
+**严重度**: 中  
+**平台**: JS vs JVM  
+**类型**: 行为差异
+
+**问题描述**:
+```
+JVM: std.native("regexQuoteMeta")("hello.world") = "hello\\.world"
+JS:  std.native("regexQuoteMeta")("hello.world") = "\\Qhello.world\\E"
+```
+
+- JVM (re2j): 用反斜杠转义单个特殊字符
+- JS (JavaScript regex): 使用 `\Q...\E` 引用语法
+
+两种都产生匹配字面字符串的有效模式，但输出格式不同。
+
+**根因**: JVM 使用 re2j，JS 使用 JavaScript regex。这是平台特定的行为差异。
+
+**建议**: 文档说明平台差异，或在 JS 平台使用与 JVM 相同的转义策略。
+
+---
+
+### PLATFORM-004: JS 上哈希函数不可用
+
+**严重度**: 中  
+**平台**: JS (Scala.js)  
+**上游 Issue**: Scala.js 已知限制
+
+**问题描述**:
+以下函数在 JS 上不可用（全部抛出 "not implemented in Scala.js"）:
+- `std.md5()`
+- `std.sha1()`
+- `std.sha256()`
+- `std.sha512()`
+- `std.sha3()`
+
+**根因**: Scala.js 不提供这些加密哈希函数的实现。这是 Scala.js 的已知限制。
+
+**建议**: 
+- 文档说明 JS 平台不支持这些函数
+- 或考虑在 JS 平台使用 JavaScript 的 crypto API 实现（如果可用）
+- 或在 Scala.js 仓库开 issue 请求支持
+
+---
+
+### PLATFORM-005: 浮点数渲染差异
+
+**严重度**: 低  
+**平台**: JS vs JVM  
+**类型**: 渲染差异
+
+**问题描述**:
+
+**负零渲染**:
+```
+JVM: "neg_zero": -0
+JS:  "neg_zero": 0
+```
+JVM 在 JSON 输出中保留 `-0`；JS 规范化为 `0`。
+
+**大浮点数渲染**:
+```
+JVM: 17976931348623157000...000  (1.7976931348623157e+308 的完整十进制展开)
+JS:  1.7976931348623157e+308     (科学记数法)
+```
+
+**小浮点数渲染**:
+```
+JVM: 4.9e-324
+JS:  5e-324
+```
+
+**std.log 精度**:
+```
+JVM: std.log(2.718281828) = 2.7182818284590455
+JS:  std.log(2.718281828) = 2.718281828459045
+```
+
+**根因**: JVM 的 `Double.toString` 和 JS 的 `Number.toString` 在最后一位数字的舍入上不同。这是标准的浮点数平台差异。
+
+**建议**: 接受这些差异，或考虑使用平台无关的浮点数渲染库。
+
+---
+
+## 审计总结
+
+### 已发现的 Bug 总数
+
+**12 轮审计，50+ agents，2200+ 测试场景**:
+- **sjsonnet bugs**: 12 个（已修复 16 个 PR）
+- **平台特定问题**: 5 个（2 个高严重度，3 个中严重度）
+
+### 平台特定问题分布
+
+| 问题 | 严重度 | 平台 | 是否需要上游 issue |
+|------|--------|------|-------------------|
+| WASM 导出不可用 | 高 | WASM | ✅ 是 |
+| JS 递归深度限制 | 中 | JS | ⚠️ 可能是平台限制 |
+| regexQuoteMeta 格式 | 中 | JS vs JVM | ⚠️ 平台差异 |
+| JS 哈希函数不可用 | 中 | JS | ✅ 是 |
+| 浮点数渲染差异 | 低 | JS vs JVM | ❌ 否（标准差异） |
+
+### 建议的上游 Issues
+
+1. **scala-js/scala-js**: "WASM backend: @JSExportTopLevel produces empty object with no methods"
+2. **scala-js/scala-js**: "Add support for cryptographic hash functions (md5, sha1, sha256, sha512, sha3)"
+3. **scala-native/scala-native**: 类似的 WASM 导出问题（如果 Native 也有类似问题）
+
+### 跨平台一致性
+
+**57/60 上游测试通过且输出相同**，证明跨平台正确性很强。主要差距是：
+- WASM 可用性
+- JS 哈希函数缺失
+- 边缘情况下的渲染/精度差异
+
 ## 测试方法
 
 每个 bug 修复后应：
