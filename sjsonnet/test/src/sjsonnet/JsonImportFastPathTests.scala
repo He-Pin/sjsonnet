@@ -99,6 +99,8 @@ object JsonImportFastPathTests extends TestSuite {
 
     test("invalid unicode surrogate exceptions fall back without internal errors") {
       val inputs = Map(
+        "lone-high.json" -> "{\"key\":\"\\uD800\"}",
+        "high-before-literal.json" -> "{\"key\":\"\\uD800A\"}",
         "high-before-non-low-escape.json" -> "{\"key\":\"\\uD800\\u0041\"}",
         "duplicate-high.json" -> "{\"key\":\"\\uD800\\uD801\"}",
         "lone-low.json" -> "{\"key\":\"before\\uDC00after\"}",

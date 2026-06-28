@@ -373,9 +373,11 @@ object CachedResolver {
     if (!path.last.endsWith(".json")) return None
     val fileScope = new FileScope(path)
     try {
+      val rawBytes = content.readRawBytes()
+      if (hasInvalidEscapedSurrogate(rawBytes)) return None
       val visitor =
         new JsonImportVisitor(fileScope, internedStrings, settings)
-      Some((ujson.ByteArrayParser.transform(content.readRawBytes(), visitor), fileScope))
+      Some((ujson.ByteArrayParser.transform(rawBytes, visitor), fileScope))
     } catch {
       case _: ujson.ParsingFailedException | _: DuplicateJsonKey | _: InvalidJsonNumber |
           _: JsonParseDepthExceeded | _: NumberFormatException =>
@@ -393,6 +395,64 @@ object CachedResolver {
       message.startsWith("Duplicate high surrogate") ||
       message.startsWith("Un-paired low surrogate")
     )
+  }
+
+  // ujson can normalize some invalid escaped high-surrogate inputs before visitor callbacks
+  // (for example "\\uD800A" becomes "A"), so escaped surrogate validity has to be checked on
+  // the raw JSON bytes before taking the strict-JSON fast path.
+  private def hasInvalidEscapedSurrogate(bytes: Array[Byte]): Boolean = {
+    var i = 0
+    var slashRun = 0
+    while (i < bytes.length) {
+      if (isUnicodeEscape(bytes, i, slashRun)) {
+        val codeUnit = hexCodeUnit(bytes, i + 2)
+        if (codeUnit >= 0) {
+          if (Character.isHighSurrogate(codeUnit.toChar)) {
+            val next = i + 6
+            if (!isUnicodeEscape(bytes, next, slashRun = 0)) return true
+            val low = hexCodeUnit(bytes, next + 2)
+            if (low < 0 || !Character.isLowSurrogate(low.toChar)) return true
+            i = next + 6
+          } else if (Character.isLowSurrogate(codeUnit.toChar)) {
+            return true
+          } else {
+            i += 6
+          }
+        } else {
+          i += 2
+        }
+        slashRun = 0
+      } else {
+        if (bytes(i) == '\\'.toByte) slashRun += 1
+        else slashRun = 0
+        i += 1
+      }
+    }
+    false
+  }
+
+  private def isUnicodeEscape(bytes: Array[Byte], index: Int, slashRun: Int): Boolean =
+    index + 5 < bytes.length &&
+    bytes(index) == '\\'.toByte &&
+    bytes(index + 1) == 'u'.toByte &&
+    (slashRun & 1) == 0
+
+  private def hexCodeUnit(bytes: Array[Byte], offset: Int): Int = {
+    if (offset + 4 > bytes.length) return -1
+    val d0 = hexValue(bytes(offset))
+    val d1 = hexValue(bytes(offset + 1))
+    val d2 = hexValue(bytes(offset + 2))
+    val d3 = hexValue(bytes(offset + 3))
+    if (d0 < 0 || d1 < 0 || d2 < 0 || d3 < 0) -1
+    else (d0 << 12) | (d1 << 8) | (d2 << 4) | d3
+  }
+
+  private def hexValue(byte: Byte): Int = {
+    val c = byte & 0xff
+    if (c >= '0' && c <= '9') c - '0'
+    else if (c >= 'A' && c <= 'F') c - 'A' + 10
+    else if (c >= 'a' && c <= 'f') c - 'a' + 10
+    else -1
   }
 
   private final class JsonImportVisitor(
